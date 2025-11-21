@@ -256,7 +256,7 @@ class ApiService {
   async getOutliers(params) {
     try {
       const queryParams = new URLSearchParams();
-      
+
       if (params.station) queryParams.append('station', params.station);
       if (params.start_date) queryParams.append('start_date', params.start_date);
       if (params.end_date) queryParams.append('end_date', params.end_date);
@@ -276,6 +276,57 @@ class ApiService {
         outliers_detected: 0,
         outlier_percentage: 0
       };
+    }
+  }
+
+  async getOutliersOptimized(params) {
+    try {
+      const queryParams = new URLSearchParams();
+
+      if (params.station) queryParams.append('station', params.station);
+      if (params.start_date) queryParams.append('start_date', params.start_date);
+      if (params.end_date) queryParams.append('end_date', params.end_date);
+      if (params.use_cache !== undefined) queryParams.append('use_cache', params.use_cache);
+
+      const data = await this.request(`/api/outliers/optimized?${queryParams}`);
+      return {
+        outliers: Array.isArray(data.outliers) ? data.outliers : [],
+        total_records: data.total_records || 0,
+        outliers_detected: data.outliers_detected || 0,
+        outlier_percentage: data.outlier_percentage || 0,
+        validation: data.validation || {},
+        performance: data.performance || {}
+      };
+    } catch (error) {
+      console.error('Error fetching optimized outliers:', error);
+      return {
+        outliers: [],
+        total_records: 0,
+        outliers_detected: 0,
+        outlier_percentage: 0,
+        validation: {},
+        performance: {}
+      };
+    }
+  }
+
+  async refreshOutliersCache() {
+    try {
+      return await this.request('/api/outliers/refresh-cache', {
+        method: 'POST'
+      });
+    } catch (error) {
+      console.error('Error refreshing outliers cache:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async getOutliersMetrics() {
+    try {
+      return await this.request('/api/outliers/metrics');
+    } catch (error) {
+      console.error('Error fetching outliers metrics:', error);
+      return {};
     }
   }
 

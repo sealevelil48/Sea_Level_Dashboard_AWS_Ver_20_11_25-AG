@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Starter AWS SAM template - Step Functions + Lambdas for Sea Level Dashboard
+
+Globals:
+  Function:
+    Timeout: 300
+    Runtime: python3.9
+
+Resources:
+  GetDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_data/
+      Handler: main.lambda_handler
+      MemorySize: 512
+      Policies: AWSLambdaBasicExecutionRole
+
+  GetDataBatchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_data/
+      Handler: main.lambda_handler_batch
+      MemorySize: 1024
+      Policies: AWSLambdaBasicExecutionRole
+
+  GetLiveDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_live_data/
+      Handler: main.lambda_handler
+      MemorySize: 512
+
+  GetYesterdayDataFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_yesterday_data/
+      Handler: main.lambda_handler
+      MemorySize: 256
+
+  GetPredictionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_predictions/
+      Handler: main.lambda_handler
+      MemorySize: 1024
+
+  GetIMSWarningsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_ims_warnings/
+      Handler: main.lambda_handler
+      MemorySize: 256
+
+  GetStationMapFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/lambdas/get_station_map/
+      Handler: main.lambda_handler
+      MemorySize: 256
+
+  SeaTidesOrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: backend/optimizations/
+      Handler: optimize_seatides.lambda_handler
+      MemorySize: 1024
+
+  DataIngestionStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionString: |
+        {
+          "StartAt": "Fetch",
+          "States": {
+            "Fetch": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Parameters": {"FunctionName": {"Ref": "GetDataFunction"}, "Payload.$": "$.Payload"},
+              "Next": "Validate"
+            },
+            "Validate": {"Type": "Pass", "Next": "Transform"},
+            "Transform": {"Type": "Task", "Resource": "arn:aws:states:::lambda:invoke", "Parameters": {"FunctionName": {"Ref": "GetLiveDataFunction"}}, "End": true}
+          }
+        }
+
+  SeaTidesRefreshStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionString: |
+        {
+          "StartAt": "PreCheck",
+          "States": {
+            "PreCheck": {"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":{"Ref":"SeaTidesOrchestratorFunction"},"Payload":{"action":"precheck"}},"Next":"Refresh"},
+            "Refresh": {"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":{"Ref":"SeaTidesOrchestratorFunction"},"Payload":{"action":"refresh"}},"Next":"PostCheck"},
+            "PostCheck": {"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":{"Ref":"SeaTidesOrchestratorFunction"},"Payload":{"action":"postcheck"}},"End":true}
+          }
+        }
+
+  PredictionsStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionString: |
+        {
+          "StartAt":"RunPredictions",
+          "States":{
+            "RunPredictions": {"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":{"Ref":"GetPredictionsFunction"}},"End":true}
+          }
+        }
+
+  NotificationsStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionString: |
+        {
+          "StartAt":"EvaluateWarnings",
+          "States":{
+            "EvaluateWarnings": {"Type":"Task","Resource":"arn:aws:states:::lambda:invoke","Parameters":{"FunctionName":{"Ref":"GetIMSWarningsFunction"}},"End":true}
+          }
+        }
+
+Outputs:
+  DataIngestionStateMachineArn:
+    Value: !Ref DataIngestionStateMachine
+  SeaTidesRefreshStateMachineArn:
+    Value: !Ref SeaTidesRefreshStateMachine

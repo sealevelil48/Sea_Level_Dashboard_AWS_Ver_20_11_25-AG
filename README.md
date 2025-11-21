@@ -1,5 +1,7 @@
 # Sea Level Monitoring System
 
+[![CI](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version/actions/workflows/ci.yml/badge.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version/actions/workflows/ci.yml)
+
 A comprehensive real-time sea level monitoring and analysis system with predictive capabilities, anomaly detection, and interactive data visualization for Israeli coastal stations.
 
 ## 🎯 Overview
@@ -203,6 +205,26 @@ npm run build
 4. Commit changes: `git commit -m 'feat: add amazing feature'`
 5. Push to branch: `git push origin feature/amazing-feature`
 6. Open Pull Request
+
+## CI/CD
+
+This file describes the CI workflow added to the repository.
+
+- Workflow: `.github/workflows/ci.yml` — runs on `push` and `pull_request` for `main`.
+- Matrix: Python 3.10 and 3.11.
+- Steps: checkout, setup python, install `requirements.txt` (root and `backend/requirements.txt` if present), run `pytest -q`.
+
+### Quick notes
+
+- If you want the workflow to run only on certain paths, edit the `on:` section.
+- If tests require additional services (Postgres, Redis), add `services:` or use `docker-compose` in the workflow.
+
+### How to run locally
+
+1. Create a virtualenv: `python -m venv .venv`
+2. Activate: `.\.venv\Scripts\Activate.ps1` (PowerShell)
+3. Install deps: `pip install -r requirements.txt` and `pip install -r backend/requirements.txt`
+4. Run tests: `pytest -q`
 
 ## 🐛 Troubleshooting
 

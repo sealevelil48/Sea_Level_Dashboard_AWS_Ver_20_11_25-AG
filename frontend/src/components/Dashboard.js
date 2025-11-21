@@ -19,6 +19,14 @@ const OSMMap = lazy(() => import('./OSMMap'));
 const SeaForecastView = lazy(() => import('./SeaForecastView'));
 const MarinersForecastView = lazy(() => import('./MarinersForecastView'));
 
+// Task 2: Delta comparison components
+import DeltaDisplay from './DeltaDisplay';
+import { calculateDelta } from '../utils/deltaCalculator';
+import {
+  generateConnectionShapes,
+  LINE_STYLES
+} from '../utils/lineDrawingUtils';
+
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
 
 // Helper function to format date for API without timezone issues
@@ -72,7 +80,15 @@ function Dashboard() {
   const [isTableFullscreen, setIsTableFullscreen] = useState(false);
   const [isMapFullscreen, setIsMapFullscreen] = useState(false);
   const [isMarinersFullscreen, setIsMarinersFullscreen] = useState(false);
-  
+
+  // Point selection state for click handlers
+  const [selectedPoints, setSelectedPoints] = useState([]);
+  // Structure: [{ x, y, station, timestamp, pointIndex, traceIndex }, ...]
+  // Maximum 2 points can be selected
+
+  // Task 2: Delta calculation result state
+  const [deltaResult, setDeltaResult] = useState(null);
+
   // ✅ FIX 2.2 REVISED: Deferred GovMap loading
   const [govmapReady, setGovmapReady] = useState(false);
   const [stationsFetched, setStationsFetched] = useState(false);
@@ -93,7 +109,30 @@ function Dashboard() {
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []); // ✅ No dependencies - fixed!
-  
+
+  // Task 2: Calculate delta when 2 points are selected
+  useEffect(() => {
+    if (selectedPoints.length === 2) {
+      // Transform selectedPoints format to match deltaCalculator expectations
+      const point1 = {
+        Tab_Value_mDepthC1: selectedPoints[0].y,
+        Tab_DateTime: selectedPoints[0].timestamp,
+        Station: selectedPoints[0].station
+      };
+
+      const point2 = {
+        Tab_Value_mDepthC1: selectedPoints[1].y,
+        Tab_DateTime: selectedPoints[1].timestamp,
+        Station: selectedPoints[1].station
+      };
+
+      const result = calculateDelta(point1, point2);
+      setDeltaResult(result);
+    } else {
+      setDeltaResult(null);
+    }
+  }, [selectedPoints]);
+
   const isMobile = windowWidth < 768;
   const isTablet = windowWidth >= 768 && windowWidth < 1024;
   
@@ -1016,6 +1055,30 @@ function Dashboard() {
         }
       }
 
+      // ADD SELECTED POINTS TRACE FOR VISUAL FEEDBACK
+      if (selectedPoints.length > 0) {
+        traces.push({
+          x: selectedPoints.map(p => p.x),
+          y: selectedPoints.map(p => p.y),
+          type: 'scattergl',
+          mode: 'markers',
+          name: 'Selected Points',
+          marker: {
+            color: '#FFD700',  // Gold color
+            size: 16,
+            symbol: 'star',
+            line: { color: 'white', width: 2 }
+          },
+          hovertemplate: selectedPoints.map((p, idx) =>
+            `<b>Selected Point ${idx + 1}</b><br>` +
+            `Station: ${p.station}<br>` +
+            `Time: ${p.timestamp}<br>` +
+            `Level: ${typeof p.y === 'number' ? p.y.toFixed(3) : p.y}m<extra></extra>`
+          ),
+          showlegend: true
+        });
+      }
+
       // ADD PREDICTIONS FOR MULTIPLE STATIONS
       if (predictions && Object.keys(predictions).length > 0) {
         const stationColors = ['#00ff88', '#ffaa00', '#ff6600', '#00aaff', '#ff00aa'];
@@ -1208,10 +1271,14 @@ function Dashboard() {
           color: 'white',
           activecolor: '#3b82f6'
         },
+
+        // Task 2: Connection line shapes between selected points using lineDrawingUtils
+        shapes: generateConnectionShapes(selectedPoints, LINE_STYLES.measurement),
+
         uirevision: 'constant'
       }
     };
-  }, [graphData, filters.dataType, selectedStations, filters.showAnomalies, filters.trendline, filters.analysisType, predictions, calculateTrendline, calculateAnalysis, isMobile, isGraphFullscreen]);
+  }, [graphData, filters.dataType, selectedStations, filters.showAnomalies, filters.trendline, filters.analysisType, predictions, calculateTrendline, calculateAnalysis, isMobile, isGraphFullscreen, selectedPoints]);
 
   // Export functions
   const exportGraph = () => {
@@ -1315,6 +1382,53 @@ function Dashboard() {
 
   const toggleMarinersFullscreen = useCallback(() => {
     setIsMarinersFullscreen(prev => !prev);
+  }, []);
+
+  // Handle Plotly click events for point selection
+  const handlePlotClick = useCallback((event) => {
+    if (!event.points || event.points.length === 0) return;
+
+    const clickedPoint = event.points[0];
+
+    // Extract point data
+    const pointData = {
+      x: clickedPoint.x,
+      y: clickedPoint.y,
+      station: clickedPoint.data.name || 'Unknown',
+      timestamp: clickedPoint.x,
+      pointIndex: clickedPoint.pointIndex,
+      traceIndex: clickedPoint.curveNumber,
+      fullData: clickedPoint.fullData
+    };
+
+    // Check if point is already selected
+    const isAlreadySelected = selectedPoints.some(
+      p => p.pointIndex === pointData.pointIndex &&
+           p.traceIndex === pointData.traceIndex
+    );
+
+    setSelectedPoints(prev => {
+      if (isAlreadySelected) {
+        // Deselect the point
+        return prev.filter(
+          p => !(p.pointIndex === pointData.pointIndex &&
+                 p.traceIndex === pointData.traceIndex)
+        );
+      } else {
+        // Add new point (max 2 points)
+        if (prev.length >= 2) {
+          // Replace oldest point (first in array)
+          return [...prev.slice(1), pointData];
+        } else {
+          return [...prev, pointData];
+        }
+      }
+    });
+  }, [selectedPoints]);
+
+  // Clear all selected points
+  const handleClearSelection = useCallback(() => {
+    setSelectedPoints([]);
   }, []);
 
   // Map component with proper conditional rendering and fullscreen support
@@ -1513,7 +1627,7 @@ function Dashboard() {
                 <Form.Group className="mb-2">
                   <Form.Check
                     type="checkbox"
-                    label="Show Anomalies (Southern Baseline Rules)"
+                    label="Show Anomalies"
                     checked={filters.showAnomalies}
                     onChange={(e) => handleFilterChange('showAnomalies', e.target.checked)}
                     className="small"
@@ -1740,19 +1854,79 @@ function Dashboard() {
                                 width: 1920
                               }
                             }}
-                            style={{ 
-                              width: '100%', 
+                            style={{
+                              width: '100%',
                               height: '100%'
                             }}
                             useResizeHandler={true}
+                            onClick={handlePlotClick}
                           />
                           </Suspense>
                         </div>
 
+                        {/* Task 2: Delta Display and Point Selection Info */}
+                        {selectedPoints.length > 0 && (
+                          <div className="mt-2">
+                            {selectedPoints.length === 2 && deltaResult && deltaResult.success ? (
+                              // Show full delta display when 2 points selected
+                              <DeltaDisplay
+                                station1={{
+                                  name: selectedPoints[0].station,
+                                  value: selectedPoints[0].y,
+                                  timestamp: selectedPoints[0].timestamp
+                                }}
+                                station2={{
+                                  name: selectedPoints[1].station,
+                                  value: selectedPoints[1].y,
+                                  timestamp: selectedPoints[1].timestamp
+                                }}
+                                delta={selectedPoints[1].y - selectedPoints[0].y}
+                                onClear={handleClearSelection}
+                                position="overlay"
+                                isMobile={isMobile}
+                              />
+                            ) : (
+                              // Show simple selection info when only 1 point selected
+                              <div className="p-2" style={{
+                                backgroundColor: 'rgba(20, 41, 80, 0.8)',
+                                borderRadius: '6px',
+                                border: '1px solid #2a4a8c'
+                              }}>
+                                <div className="d-flex justify-content-between align-items-center mb-2">
+                                  <small className="text-white fw-bold">
+                                    Selected Points ({selectedPoints.length}/2)
+                                  </small>
+                                  <Button
+                                    variant="outline-danger"
+                                    size="sm"
+                                    onClick={handleClearSelection}
+                                    style={{ fontSize: '0.65rem', padding: '2px 8px' }}
+                                  >
+                                    Clear Selection
+                                  </Button>
+                                </div>
+                                {selectedPoints.map((point, idx) => (
+                                  <div key={idx} className="mb-1" style={{
+                                    fontSize: '0.75rem',
+                                    color: '#FFD700'
+                                  }}>
+                                    <strong>Point {idx + 1}:</strong> {point.station} |
+                                    Time: {new Date(point.timestamp).toLocaleString()} |
+                                    Level: {typeof point.y === 'number' ? point.y.toFixed(3) : point.y}m
+                                  </div>
+                                ))}
+                                <small className="text-muted d-block mt-2" style={{ fontSize: '0.7rem' }}>
+                                  Click another point to see comparison
+                                </small>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Fullscreen Controls - Below Graph */}
                         {!isGraphFullscreen && (
                           <div className="mt-2 text-center">
-                            <Button 
+                            <Button
                               variant="outline-primary"
                               size="sm"
                               className="py-1"

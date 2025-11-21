@@ -1,0 +1,399 @@
+/* Delta Comparison Component Styles */
+
+.delta-comparison-card {
+  background: linear-gradient(135deg, #1e3a5f 0%, #0f2744 100%);
+  border: 1px solid #2a5a8f;
+  border-radius: 8px;
+  margin: 16px 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: all 0.3s ease;
+}
+
+.delta-comparison-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.delta-comparison-card.delta-empty {
+  background: linear-gradient(135deg, #1a2e45 0%, #0d1f35 100%);
+  border-color: #1a3a5a;
+}
+
+.delta-comparison-card.delta-success {
+  border-color: #00bfff;
+  background: linear-gradient(135deg, #0f2744 0%, #1e3a5f 100%);
+}
+
+/* Header */
+.delta-header {
+  background-color: rgba(0, 191, 255, 0.1);
+  border-bottom: 2px solid rgba(0, 191, 255, 0.3);
+  padding: 12px 16px;
+}
+
+.delta-header h6 {
+  color: #00bfff;
+  font-weight: 600;
+  margin: 0;
+  font-size: 1rem;
+}
+
+/* Body */
+.delta-body {
+  padding: 16px;
+  color: #fff;
+}
+
+/* Footer */
+.delta-footer {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-top: 1px solid rgba(0, 191, 255, 0.2);
+  padding: 8px 16px;
+}
+
+/* Compact Summary */
+.delta-compact {
+  background-color: rgba(0, 0, 0, 0.3);
+  border-left: 3px solid #00ff88;
+  padding: 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+}
+
+.delta-compact-text {
+  color: #00ff88;
+  font-size: 0.95rem;
+  font-weight: 500;
+  word-break: break-word;
+}
+
+/* Point Details */
+.delta-point {
+  background-color: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 12px;
+  text-align: center;
+  transition: all 0.2s ease;
+}
+
+.delta-point:hover {
+  background-color: rgba(0, 0, 0, 0.3);
+  border-color: rgba(0, 191, 255, 0.3);
+}
+
+.delta-label {
+  font-size: 0.75rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+
+.delta-station {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #00bfff;
+  margin-bottom: 6px;
+}
+
+.delta-value {
+  font-size: 1.25rem;
+  font-weight: bold;
+  color: #fff;
+  margin-bottom: 4px;
+  font-family: 'Courier New', monospace;
+}
+
+.delta-time-small {
+  font-size: 0.75rem;
+  color: #aaa;
+  font-family: 'Courier New', monospace;
+}
+
+/* Main Delta Value Display */
+.delta-main-value {
+  background: linear-gradient(135deg, rgba(0, 255, 136, 0.1) 0%, rgba(0, 191, 255, 0.1) 100%);
+  border: 2px solid rgba(0, 255, 136, 0.3);
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+  margin: 12px 0;
+}
+
+.delta-arrow {
+  font-size: 2rem;
+  margin-bottom: 8px;
+  color: #00ff88;
+  font-weight: bold;
+}
+
+.delta-number {
+  font-size: 2rem;
+  font-weight: bold;
+  color: #fff;
+  font-family: 'Courier New', monospace;
+  margin-bottom: 4px;
+}
+
+.delta-percentage {
+  font-size: 1rem;
+  color: #00ff88;
+  font-weight: 600;
+}
+
+/* Badges */
+.delta-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.delta-badges .badge {
+  font-size: 0.85rem;
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-weight: 500;
+}
+
+.badge.bg-info {
+  background-color: rgba(0, 191, 255, 0.7) !important;
+}
+
+.badge.bg-primary {
+  background-color: rgba(100, 150, 255, 0.7) !important;
+}
+
+.badge.bg-warning {
+  background-color: rgba(255, 170, 0, 0.7) !important;
+}
+
+/* Time Info */
+.delta-time-info {
+  background-color: rgba(255, 170, 0, 0.1);
+  border-left: 3px solid #ffaa00;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* Statistics Table */
+.delta-stats {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 12px;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.stat-row:last-child {
+  border-bottom: none;
+}
+
+.stat-label {
+  color: #aaa;
+  font-size: 0.9rem;
+}
+
+.stat-value {
+  color: #00ff88;
+  font-weight: 600;
+  font-family: 'Courier New', monospace;
+}
+
+/* Details/Accordion */
+.delta-details {
+  margin-top: 12px;
+  color: #999;
+}
+
+.delta-details-summary {
+  cursor: pointer;
+  color: #00bfff;
+  font-size: 0.9rem;
+  font-weight: 500;
+  user-select: none;
+  padding: 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+}
+
+.delta-details-summary:hover {
+  background-color: rgba(0, 191, 255, 0.1);
+}
+
+.delta-details-summary::-webkit-details-marker {
+  color: #00bfff;
+}
+
+.delta-formatted-output {
+  background-color: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 191, 255, 0.2);
+  border-radius: 4px;
+  padding: 12px;
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: #00ff88;
+  font-family: 'Courier New', monospace;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Close Button */
+.btn-close-custom {
+  padding: 0.25rem 0.5rem !important;
+  font-size: 1rem !important;
+  line-height: 1 !important;
+}
+
+.btn-close-custom:hover {
+  background-color: rgba(255, 68, 68, 0.3) !important;
+  border-color: #ff4444 !important;
+  color: #ff4444 !important;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .delta-comparison-card {
+    margin: 12px 0;
+  }
+
+  .delta-body {
+    padding: 12px;
+  }
+
+  .delta-number {
+    font-size: 1.5rem;
+  }
+
+  .delta-arrow {
+    font-size: 1.5rem;
+  }
+
+  .delta-percentage {
+    font-size: 0.9rem;
+  }
+
+  .delta-point {
+    padding: 10px;
+    margin-bottom: 8px;
+  }
+
+  .delta-station {
+    font-size: 0.85rem;
+  }
+
+  .delta-value {
+    font-size: 1.1rem;
+  }
+
+  .delta-formatted-output {
+    font-size: 0.75rem;
+    max-height: 300px;
+  }
+}
+
+@media (max-width: 480px) {
+  .delta-comparison-card {
+    margin: 8px 0;
+  }
+
+  .delta-header h6 {
+    font-size: 0.9rem;
+  }
+
+  .delta-body {
+    padding: 10px;
+  }
+
+  .delta-number {
+    font-size: 1.25rem;
+  }
+
+  .delta-point {
+    padding: 8px;
+  }
+
+  .delta-stats {
+    padding: 8px;
+  }
+
+  .stat-label,
+  .stat-value {
+    font-size: 0.85rem;
+  }
+
+  .delta-badges {
+    gap: 4px;
+  }
+
+  .delta-badges .badge {
+    font-size: 0.75rem;
+    padding: 4px 8px;
+  }
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .delta-comparison-card {
+    background: linear-gradient(135deg, #1e3a5f 0%, #0f2744 100%);
+  }
+
+  .delta-body,
+  .delta-footer {
+    color: #fff;
+  }
+}
+
+/* Animations */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.delta-comparison-card {
+  animation: slideIn 0.3s ease;
+}
+
+/* Focus styles for accessibility */
+.delta-details-summary:focus {
+  outline: 2px solid #00bfff;
+  outline-offset: 2px;
+}
+
+.btn-close-custom:focus {
+  outline: 2px solid #ff4444;
+  outline-offset: 2px;
+}
+
+/* Print styles */
+@media print {
+  .delta-comparison-card {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .delta-header {
+    background: #ddd;
+    color: #000;
+  }
+
+  .delta-body {
+    color: #000;
+  }
+}
