@@ -68,7 +68,9 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
   // Mapping between station names and forecast location names
   const stationToForecastMapping = {
     'Acre': 'Northern Coast',
-    'Yafo': 'Central Coast', 
+    'Haifa': 'Northern Coast',  // Added Haifa
+    'Yafo': 'Central Coast',
+    'Ashdod': 'Southern Coast',  // Added Ashdod
     'Ashkelon': 'Southern Coast',
     'Eilat': 'Gulf of Eilat'
   };
@@ -203,50 +205,70 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
     return () => clearTimeout(timeoutId);
   }, [isVisible]);
 
-  // Add Sea of Galilee marker when forecast data changes
+  // Add ALL forecast markers when forecast data changes
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (!mapInstanceRef.current || !forecastData?.locations) return;
-      
-      // Remove existing Sea of Galilee marker
-      if (markersRef.current['forecast_sea_of_galilee']) {
-        try {
-          mapInstanceRef.current.removeLayer(markersRef.current['forecast_sea_of_galilee']);
-        } catch (e) {
-          console.warn('Error removing Sea of Galilee marker:', e);
+      if (!mapInstanceRef.current || !forecastData?.locations || !leafletLoaded) return;
+
+      console.log('Adding forecast markers for', forecastData.locations.length, 'locations');
+
+      // Remove existing forecast markers
+      Object.keys(markersRef.current).forEach(key => {
+        if (key.startsWith('forecast_')) {
+          try {
+            mapInstanceRef.current.removeLayer(markersRef.current[key]);
+          } catch (e) {
+            console.warn('Error removing forecast marker:', e);
+          }
+          delete markersRef.current[key];
         }
-        delete markersRef.current['forecast_sea_of_galilee'];
-      }
-      
-      // Find Sea of Galilee forecast data
-      const seaOfGalilee = forecastData.locations.find(loc => loc.name_eng === 'Sea of Galilee');
-      if (!seaOfGalilee || !leafletLoaded) return;
-      
-      const coords = [seaOfGalilee.coordinates.lat, seaOfGalilee.coordinates.lng];
-      const marker = L.marker(coords).addTo(mapInstanceRef.current);
-      
-      const currentForecast = seaOfGalilee.forecasts[0];
-      const waveHeight = currentForecast?.elements?.wave_height ? parseWaveHeight(currentForecast.elements.wave_height) : 'N/A';
-      const windInfo = currentForecast?.elements?.wind ? parseWindInfo(currentForecast.elements.wind) : 'N/A';
-      
-      const popupContent = `
-        <div style="font-family: Arial, sans-serif; min-width: 200px;">
-          <h4 style="margin: 0 0 10px 0; color: #1e6bc4;">${seaOfGalilee.name_eng}</h4>
-          <p><strong>Wave Height:</strong> ${waveHeight}</p>
-          <p><strong>Sea Temperature:</strong> ${currentForecast?.elements?.sea_temperature || 'N/A'}°C</p>
-          <p><strong>Wind:</strong> ${windInfo}</p>
-          <p><strong>Forecast Period:</strong><br/>${currentForecast?.period?.start || 'N/A'} - ${currentForecast?.period?.end || 'N/A'}</p>
-          <p style="font-size: 11px; color: #888;">
-            <a href="https://ims.gov.il/he/coasts" target="_blank" rel="noopener noreferrer" style="color: #666; text-decoration: none;">IMS Forecast ©</a>
-          </p>
-        </div>
-      `;
-      
-      marker.bindPopup(popupContent);
-      marker.bindTooltip('Sea of Galilee');
-      markersRef.current['forecast_sea_of_galilee'] = marker;
+      });
+
+      // Add forecast markers for ALL locations that DON'T have station data
+      const stationNames = Object.keys(stationCoordinates);
+      const forecastLocationNames = Object.values(stationToForecastMapping);
+
+      forecastData.locations.forEach(location => {
+        // Skip if this forecast location is already shown combined with a station
+        // (we only want standalone forecast markers)
+        const isStationLocation = forecastLocationNames.includes(location.name_eng);
+
+        // Always show Sea of Galilee, and show other forecast locations that aren't combined with stations
+        if (!isStationLocation || location.name_eng === 'Sea of Galilee') {
+          const coords = [location.coordinates.lat, location.coordinates.lng];
+          const marker = L.marker(coords, {
+            icon: L.icon({
+              iconUrl: 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#2196F3"/></svg>'),
+              iconSize: [32, 32],
+              iconAnchor: [16, 32],
+              popupAnchor: [0, -32]
+            })
+          }).addTo(mapInstanceRef.current);
+
+          const currentForecast = location.forecasts[0];
+          const waveHeight = currentForecast?.elements?.wave_height ? parseWaveHeight(currentForecast.elements.wave_height) : 'N/A';
+          const windInfo = currentForecast?.elements?.wind ? parseWindInfo(currentForecast.elements.wind) : 'N/A';
+
+          const popupContent = `
+            <div style="font-family: Arial, sans-serif; min-width: 200px;">
+              <h4 style="margin: 0 0 10px 0; color: #2196F3;">${location.name_eng}</h4>
+              <p><strong>Wave Height:</strong> ${waveHeight}</p>
+              <p><strong>Sea Temperature:</strong> ${currentForecast?.elements?.sea_temperature || 'N/A'}°C</p>
+              <p><strong>Wind:</strong> ${windInfo}</p>
+              <p><strong>Forecast Period:</strong><br/>${currentForecast?.from || currentForecast?.period?.start || 'N/A'} - ${currentForecast?.to || currentForecast?.period?.end || 'N/A'}</p>
+              <p style="font-size: 11px; color: #888;">
+                <a href="https://ims.gov.il/he/coasts" target="_blank" rel="noopener noreferrer" style="color: #666; text-decoration: none;">IMS Forecast ©</a>
+              </p>
+            </div>
+          `;
+
+          marker.bindPopup(popupContent);
+          marker.bindTooltip(`${location.name_eng} - Wave Forecast`);
+          markersRef.current[`forecast_${location.name_eng.replace(/\s+/g, '_').toLowerCase()}`] = marker;
+        }
+      });
     }, 500);
-    
+
     return () => clearTimeout(timer);
   }, [forecastData]);
 
@@ -333,12 +355,12 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
 
       Object.entries(markersRef.current).forEach(([station, marker]) => {
         if (!marker || station.startsWith('forecast_')) return;
-        
+
         const stationData = mapData.filter(d => d.Station === station);
         const latestData = stationData.length > 0 ? stationData[stationData.length - 1] : null;
         const forecastLocation = getForecastForStation(station);
-        
-        console.log(`Station ${station}: data=${!!latestData}, forecast=${!!forecastLocation}`);
+
+        console.log(`Station ${station}: data=${!!latestData}, forecast=${!!forecastLocation}, forecastName=${stationToForecastMapping[station]}`);
         
         let popupContent = '<div style="font-family: Arial, sans-serif; min-width: 200px;">';
         
