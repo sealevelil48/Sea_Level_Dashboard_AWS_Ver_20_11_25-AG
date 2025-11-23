@@ -13,6 +13,11 @@ echo.
 echo ========================================
 echo.
 
+REM Set default host if not defined
+if not defined DASHBOARD_HOST (
+    set DASHBOARD_HOST=5.102.231.16
+)
+
 echo [1/4] Stopping any existing development servers...
 taskkill /f /im node.exe 2>nul
 timeout /t 2 /nobreak >nul
@@ -39,8 +44,8 @@ echo ========================================
 echo   PRODUCTION SERVER STARTING
 echo ========================================
 echo   Frontend: http://localhost:30887
-echo   Backend:  http://5.102.231.16:30886
-echo   
+echo   Backend:  http://%DASHBOARD_HOST%:30886
+echo.
 echo   Expected load time: 1-3 seconds
 echo   Bundle size: Optimized production build
 echo ========================================

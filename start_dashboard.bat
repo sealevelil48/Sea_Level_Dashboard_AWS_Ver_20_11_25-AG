@@ -10,8 +10,13 @@ echo   3. Start the backend server
 echo   4. Serve everything on port 30886
 echo.
 
+REM Set default host if not defined
+if not defined DASHBOARD_HOST (
+    set DASHBOARD_HOST=5.102.231.16
+)
+
 REM Step 1: Build frontend
-echo [1/3] Building frontend production bundle...
+echo [1/4] Building frontend production bundle...
 cd /d "%~dp0frontend"
 call npm run build-govmap
 
@@ -25,9 +30,20 @@ echo.
 echo [OK] Frontend built successfully!
 echo.
 
-REM Step 2: Check and start Redis
+REM Step 2: Check domain configuration
 cd /d "%~dp0"
-echo [2/3] Checking Redis service...
+echo [2/4] Checking domain configuration...
+findstr "sea-level-dash-local" C:\Windows\System32\drivers\etc\hosts >nul
+if %ERRORLEVEL% neq 0 (
+    echo ERROR: Domain not configured!
+    echo Please run setup_govmap_domain.bat as Administrator first
+    pause
+    exit /b 1
+)
+echo [OK] Domain configured
+
+REM Step 3: Check and start Redis
+echo [3/4] Checking Redis service...
 sc query Redis >nul 2>&1
 if %errorLevel% neq 0 (
     echo Redis service not found. Starting Redis manually...
@@ -41,15 +57,15 @@ if %errorLevel% neq 0 (
 
 echo.
 
-REM Step 3: Start backend server
-echo [3/3] Starting backend server...
+REM Step 4: Start backend server
+echo [4/4] Starting backend server...
 echo.
 echo ========================================
 echo   DASHBOARD STARTING
 echo ========================================
 echo.
-echo   URL for clients: http://5.102.231.16:30886
-echo   API Documentation: http://5.102.231.16:30886/docs
+echo   URL for clients: http://%DASHBOARD_HOST%:30886
+echo   API Documentation: http://%DASHBOARD_HOST%:30886/docs
 echo.
 echo   This server provides:
 echo   - Frontend (React dashboard)

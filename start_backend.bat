@@ -13,6 +13,11 @@ echo.
 echo ========================================
 echo.
 
+REM Set default host if not defined
+if not defined DASHBOARD_HOST (
+    set DASHBOARD_HOST=5.102.231.16
+)
+
 REM Check and start Redis service
 echo [1/2] Checking Redis service status...
 sc query Redis >nul 2>&1
@@ -45,8 +50,8 @@ echo.
 echo ========================================
 echo   SERVER STARTING
 echo ========================================
-echo   Client URL: http://5.102.231.16:30886
-echo   API Docs:   http://5.102.231.16:30886/docs
+echo   Client URL: http://%DASHBOARD_HOST%:30886
+echo   API Docs:   http://%DASHBOARD_HOST%:30886/docs
 echo ========================================
 echo.
 cd backend

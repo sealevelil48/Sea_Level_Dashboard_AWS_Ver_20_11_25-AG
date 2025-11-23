@@ -237,14 +237,8 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
         // Always show Sea of Galilee, and show other forecast locations that aren't combined with stations
         if (!isStationLocation || location.name_eng === 'Sea of Galilee') {
           const coords = [location.coordinates.lat, location.coordinates.lng];
-          const marker = L.marker(coords, {
-            icon: L.icon({
-              iconUrl: 'data:image/svg+xml;base64,' + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z" fill="#2196F3"/></svg>'),
-              iconSize: [32, 32],
-              iconAnchor: [16, 32],
-              popupAnchor: [0, -32]
-            })
-          }).addTo(mapInstanceRef.current);
+          // Use default Leaflet marker (same as station markers)
+          const marker = L.marker(coords).addTo(mapInstanceRef.current);
 
           const currentForecast = location.forecasts[0];
           const waveHeight = currentForecast?.elements?.wave_height ? parseWaveHeight(currentForecast.elements.wave_height) : 'N/A';
@@ -252,7 +246,7 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
 
           const popupContent = `
             <div style="font-family: Arial, sans-serif; min-width: 200px;">
-              <h4 style="margin: 0 0 10px 0; color: #2196F3;">${location.name_eng}</h4>
+              <h4 style="margin: 0 0 10px 0; color: #1e6bc4;">${location.name_eng}</h4>
               <p><strong>Wave Height:</strong> ${waveHeight}</p>
               <p><strong>Sea Temperature:</strong> ${currentForecast?.elements?.sea_temperature || 'N/A'}°C</p>
               <p><strong>Wind:</strong> ${windInfo}</p>
@@ -293,7 +287,8 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
     };
     
     fetchStationMapData();
-  }, [mapInstanceRef.current]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading]); // Run when map is ready (isLoading becomes false)
 
   // Function to update markers with station data
   const updateMarkersWithData = (stationMapData) => {

@@ -195,7 +195,27 @@ function Dashboard() {
     }
   };
 
-  // ✅ FIX 2.1: Removed fetchSeaForecast - SeaForecastView handles its own data
+  // ✅ Fetch forecast data for OSMMap (Sea of Galilee marker + combined data in popups)
+  // Uses /api/sea-forecast which returns Israel coastal locations (Northern/Central/Southern Coast, Sea of Galilee, Gulf of Eilat)
+  useEffect(() => {
+    const fetchForecastData = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/sea-forecast`);
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Forecast data fetched for map:', data?.locations?.length, 'locations:', data?.locations?.map(l => l.name_eng).join(', '));
+          setForecastData(data);
+        }
+      } catch (err) {
+        console.error('Error fetching forecast data for map:', err);
+      }
+    };
+
+    fetchForecastData();
+    // Refresh every 30 minutes
+    const interval = setInterval(fetchForecastData, 30 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Calculate stats from data
   const calculateStats = useCallback((data) => {
@@ -1448,7 +1468,7 @@ function Dashboard() {
             style={{ width: '100%', height: '100%', border: 'none' }}
             title="GovMap"
             allow="geolocation; accelerometer; clipboard-write"
-            sandbox="allow-scripts allow-same-origin allow-forms allow-top-navigation"
+            sandbox="allow-scripts allow-same-origin allow-forms"
             referrerPolicy="no-referrer"
           />
         </div>
