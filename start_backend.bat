@@ -1,9 +1,20 @@
 @echo off
-echo Starting Sea Level Dashboard Backend with Redis Caching...
+echo ========================================
+echo   Sea Level Dashboard - Backend Only
+echo ========================================
+echo.
+echo NOTE: This starts the backend server ONLY.
+echo       Make sure you have built the frontend first!
+echo       If you see "static directory not found", run:
+echo         cd frontend ^&^& npm run build-govmap
+echo.
+echo       OR use start_dashboard.bat for full setup.
+echo.
+echo ========================================
 echo.
 
 REM Check and start Redis service
-echo Checking Redis service status...
+echo [1/2] Checking Redis service status...
 sc query Redis >nul 2>&1
 if %errorLevel% neq 0 (
     echo Redis service not installed. Installing Redis service...
@@ -29,11 +40,14 @@ if %errorLevel% neq 0 (
     exit /b 1
 )
 
-echo Starting optimized backend server on port 30886...
-echo This server also serves the frontend - no need to run start_production.bat
+echo [2/2] Starting optimized backend server on port 30886...
 echo.
-echo Access at: http://5.102.231.16:30886
-echo API Docs:  http://5.102.231.16:30886/docs
+echo ========================================
+echo   SERVER STARTING
+echo ========================================
+echo   Client URL: http://5.102.231.16:30886
+echo   API Docs:   http://5.102.231.16:30886/docs
+echo ========================================
 echo.
 cd backend
 python local_server_optimized.py

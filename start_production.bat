@@ -1,6 +1,15 @@
 @echo off
 echo ========================================
-echo   Sea Level Dashboard - Production Mode
+echo   Sea Level Dashboard - Frontend Only
+echo   (Development/Testing Mode)
+echo ========================================
+echo.
+echo NOTE: This builds and serves the frontend on port 30887.
+echo       The backend must be running separately on port 30886.
+echo.
+echo       For normal operation, use start_dashboard.bat instead,
+echo       which runs everything on port 30886.
+echo.
 echo ========================================
 echo.
 
