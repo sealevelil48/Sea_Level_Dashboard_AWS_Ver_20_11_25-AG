@@ -29,7 +29,12 @@ if %errorLevel% neq 0 (
     exit /b 1
 )
 
-echo Starting backend server on sea-level-dash-local:8001...
+echo Starting optimized backend server on port 30886...
+echo This server also serves the frontend - no need to run start_production.bat
+echo.
+echo Access at: http://5.102.231.16:30886
+echo API Docs:  http://5.102.231.16:30886/docs
+echo.
 cd backend
-python local_server.py --host 0.0.0.0 --port 8001
+python local_server_optimized.py
 pause
