@@ -217,6 +217,47 @@ function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  // Helper function to calculate actual 24-hour change for a station's data
+  const calculate24hChange = (stationData) => {
+    if (!stationData || stationData.length < 2) return 0;
+
+    // Sort by datetime to ensure correct order
+    const sortedData = [...stationData].sort((a, b) =>
+      new Date(a.Tab_DateTime) - new Date(b.Tab_DateTime)
+    );
+
+    // Get the most recent data point
+    const latestPoint = sortedData[sortedData.length - 1];
+    const latestTime = new Date(latestPoint.Tab_DateTime);
+    const latestLevel = latestPoint.Tab_Value_mDepthC1;
+
+    if (isNaN(latestLevel)) return 0;
+
+    // Find data point closest to 24 hours ago (within 2 hour tolerance)
+    const target24hAgo = new Date(latestTime.getTime() - 24 * 60 * 60 * 1000);
+    const toleranceMs = 2 * 60 * 60 * 1000; // 2 hours tolerance
+
+    let closestPoint = null;
+    let closestDiff = Infinity;
+
+    for (const point of sortedData) {
+      const pointTime = new Date(point.Tab_DateTime);
+      const diff = Math.abs(pointTime.getTime() - target24hAgo.getTime());
+
+      if (diff < closestDiff && diff <= toleranceMs && !isNaN(point.Tab_Value_mDepthC1)) {
+        closestDiff = diff;
+        closestPoint = point;
+      }
+    }
+
+    if (closestPoint) {
+      return latestLevel - closestPoint.Tab_Value_mDepthC1;
+    }
+
+    // Fallback: if no 24h data available, return 0 or use first available point
+    return 0;
+  };
+
   // Calculate stats from data
   const calculateStats = useCallback((data) => {
     if (!data || data.length === 0) return;
@@ -236,18 +277,25 @@ function Dashboard() {
       });
 
       let stationCount = 0;
+      let validChangeCount = 0;
+
       Object.values(stationGroups).forEach(stationData => {
         if (stationData.length > 0) {
           stationCount++;
           const levels = stationData.map(d => d.Tab_Value_mDepthC1).filter(v => !isNaN(v));
           const temps = stationData.map(d => d.Tab_Value_monT2m).filter(v => !isNaN(v));
-          
+
           if (levels.length > 0) {
             currentLevel += levels[levels.length - 1];
-            if (levels.length > 1) {
-              change24h += levels[levels.length - 1] - levels[0];
-            }
           }
+
+          // Calculate actual 24h change for this station
+          const stationChange = calculate24hChange(stationData);
+          if (stationChange !== 0) {
+            change24h += stationChange;
+            validChangeCount++;
+          }
+
           if (temps.length > 0) {
             avgTemp += temps.reduce((a, b) => a + b, 0) / temps.length;
           }
@@ -257,19 +305,22 @@ function Dashboard() {
 
       if (stationCount > 0) {
         currentLevel /= stationCount;
-        change24h /= stationCount;
         avgTemp /= stationCount;
+      }
+      if (validChangeCount > 0) {
+        change24h /= validChangeCount;
       }
     } else {
       const levels = data.map(d => d.Tab_Value_mDepthC1).filter(v => !isNaN(v));
       const temps = data.map(d => d.Tab_Value_monT2m).filter(v => !isNaN(v));
-      
+
       if (levels.length > 0) {
         currentLevel = levels[levels.length - 1];
-        if (levels.length > 1) {
-          change24h = levels[levels.length - 1] - levels[0];
-        }
       }
+
+      // Calculate actual 24h change
+      change24h = calculate24hChange(data);
+
       if (temps.length > 0) {
         avgTemp = temps.reduce((a, b) => a + b, 0) / temps.length;
       }
