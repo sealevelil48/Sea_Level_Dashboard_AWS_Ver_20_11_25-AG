@@ -205,10 +205,11 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
     return () => clearTimeout(timeoutId);
   }, [isVisible]);
 
-  // Add ALL forecast markers when forecast data changes
+  // Add ALL forecast markers when forecast data changes AND map is ready
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (!mapInstanceRef.current || !forecastData?.locations || !leafletLoaded) return;
+      // Use isLoading state instead of leafletLoaded (which is module-level and doesn't trigger re-renders)
+      if (!mapInstanceRef.current || !forecastData?.locations || isLoading) return;
 
       console.log('Adding forecast markers for', forecastData.locations.length, 'locations');
 
@@ -270,7 +271,7 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [forecastData]);
+  }, [forecastData, isLoading]); // Added isLoading to re-run when map is ready
 
   // Fetch station map data for OpenStreetMap
   useEffect(() => {
@@ -346,10 +347,10 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
     });
   };
 
-  // Update marker popups when data changes
+  // Update marker popups when data changes AND map is ready
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (!mapInstanceRef.current || !mapData?.length) return;
+      if (!mapInstanceRef.current || !mapData?.length || isLoading) return;
 
       console.log('Popup update: mapData length:', mapData?.length, 'forecast locations:', forecastData?.locations?.length);
 
@@ -413,7 +414,7 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
     }, 2000);
     
     return () => clearTimeout(timer);
-  }, [mapData, forecastData]);
+  }, [mapData, forecastData, isLoading]); // Added isLoading to re-run when map is ready
 
   // Cleanup on unmount
   useEffect(() => {

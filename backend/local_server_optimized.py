@@ -499,6 +499,59 @@ async def get_data(
     
     return await deduplicator.deduplicate(dedup_key, fetch_data())
 
+@app.get("/api/data/batch")
+@monitor_performance("data_batch")
+async def get_data_batch(
+    request: Request,
+    stations: str = Query(None, description="Comma-separated station names"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO format)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO format)"),
+    data_source: str = Query("default", description="Data source"),
+    show_anomalies: bool = Query(False, description="Show anomalies")
+):
+    """Batch endpoint to fetch data for multiple stations in a single query"""
+
+    # Create deduplication key
+    dedup_key = f"data_batch:{stations}:{start_date}:{end_date}:{data_source}:{show_anomalies}"
+
+    async def fetch_batch_data():
+        try:
+            # Import batch handler
+            from lambdas.get_data.main import lambda_handler_batch
+
+            # Add performance monitoring
+            start_time = time.time()
+
+            event = {
+                "httpMethod": "GET",
+                "path": "/data/batch",
+                "queryStringParameters": {
+                    "stations": stations,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "data_source": data_source,
+                    "show_anomalies": str(show_anomalies).lower()
+                }
+            }
+            response = lambda_handler_batch(event, None)
+
+            # Add performance headers
+            duration = (time.time() - start_time) * 1000
+            result = lambda_to_fastapi_response(response)
+            if hasattr(result, 'headers'):
+                result.headers['X-Response-Time'] = f"{duration:.0f}ms"
+                result.headers['Cache-Control'] = 'public, max-age=120'  # 2 minutes
+
+            return result
+        except Exception as e:
+            logger.error(f"Error in batch data endpoint: {e}")
+            return JSONResponse(
+                content={"error": str(e), "data": []},
+                status_code=500
+            )
+
+    return await deduplicator.deduplicate(dedup_key, fetch_batch_data())
+
 @app.get("/api/latest")
 @monitor_performance("latest")
 async def get_latest_data(
