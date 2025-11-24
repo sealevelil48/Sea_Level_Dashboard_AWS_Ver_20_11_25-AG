@@ -70,17 +70,21 @@ def calculate_aggregation_level(start_date, end_date):
         end_dt = datetime.strptime(end_date, '%Y-%m-%d')
         days = (end_dt - start_dt).days
 
-        # CHANGED: Always use raw (1-minute) data for up to 30 days
-        if days <= 30:
-            return 'raw', None
+        # More aggressive aggregation to reduce payload size
+        if days <= 3:
+            return 'raw', None              # ~4,320 rows/station (manageable)
+        elif days <= 7:
+            return '5min', '5 minutes'      # ~2,016 rows/station
+        elif days <= 14:
+            return '15min', '15 minutes'    # ~1,344 rows/station
+        elif days <= 30:
+            return 'hourly', '1 hour'       # ~720 rows/station
         elif days <= 90:
-            return 'hourly', '1 hour'
+            return 'hourly', '3 hours'      # ~720 rows/station
         elif days <= 180:
-            return 'hourly', '3 hours'
-        elif days <= 365:
-            return 'daily', '1 day'
+            return 'daily', '1 day'         # ~180 rows/station
         else:
-            return 'weekly', '1 week'
+            return 'weekly', '1 week'       # ~52 rows/station
     except Exception as e:
         logger.warning(f"Date calculation error: {e}")
         return 'raw', None
@@ -201,11 +205,37 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
     else:
         if agg_level == 'raw':
             sql_query = '''
-                SELECT 
-                    m."Tab_DateTime", 
-                    l."Station", 
+                SELECT
+                    m."Tab_DateTime",
+                    l."Station",
                     CAST(m."Tab_Value_mDepthC1" AS FLOAT) as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m"
+                FROM "Monitors_info2" m
+                JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+                WHERE 1=1
+            '''
+        elif agg_level == '5min':
+            sql_query = '''
+                SELECT
+                    (DATE_TRUNC('hour', m."Tab_DateTime") +
+                    INTERVAL '5 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 5))::timestamp as "Tab_DateTime",
+                    l."Station",
+                    AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
+                    AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
+                    COUNT(*) as "RecordCount"
+                FROM "Monitors_info2" m
+                JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+                WHERE 1=1
+            '''
+        elif agg_level == '15min':
+            sql_query = '''
+                SELECT
+                    (DATE_TRUNC('hour', m."Tab_DateTime") +
+                    INTERVAL '15 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 15))::timestamp as "Tab_DateTime",
+                    l."Station",
+                    AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
+                    AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
+                    COUNT(*) as "RecordCount"
                 FROM "Monitors_info2" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
@@ -282,13 +312,19 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
             params['end_date'] = parsed_end_date
         
         # Add GROUP BY for aggregations
-        if agg_level == 'hourly' and time_bucket == '3 hours':
-            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") + 
+        if agg_level == '5min':
+            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
+                INTERVAL '5 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 5), l."Station"'''
+        elif agg_level == '15min':
+            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
+                INTERVAL '15 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 15), l."Station"'''
+        elif agg_level == 'hourly' and time_bucket == '3 hours':
+            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
                 INTERVAL '3 hours' * FLOOR(EXTRACT(HOUR FROM m."Tab_DateTime")::int / 3), l."Station"'''
         elif agg_level in ['hourly', 'daily', 'weekly']:
             period = 'hour' if agg_level == 'hourly' else ('day' if agg_level == 'daily' else 'week')
             sql_query += f' GROUP BY DATE_TRUNC(\'{period}\', m."Tab_DateTime"), l."Station"'
-        
+
         sql_query += ' ORDER BY "Tab_DateTime" ASC'
     
     logger.info(f"[QUERY] Executing {agg_level} query")
@@ -408,6 +444,32 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = ANY(:stations)
             '''
+        elif agg_level == '5min':
+            sql_query = '''
+                SELECT
+                    (DATE_TRUNC('hour', m."Tab_DateTime") +
+                    INTERVAL '5 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 5))::timestamp as "Tab_DateTime",
+                    l."Station",
+                    AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
+                    AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
+                    COUNT(*) as "RecordCount"
+                FROM "Monitors_info2" m
+                JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+                WHERE l."Station" = ANY(:stations)
+            '''
+        elif agg_level == '15min':
+            sql_query = '''
+                SELECT
+                    (DATE_TRUNC('hour', m."Tab_DateTime") +
+                    INTERVAL '15 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 15))::timestamp as "Tab_DateTime",
+                    l."Station",
+                    AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
+                    AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
+                    COUNT(*) as "RecordCount"
+                FROM "Monitors_info2" m
+                JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+                WHERE l."Station" = ANY(:stations)
+            '''
         elif agg_level == 'hourly':
             time_trunc = '1 hour' if time_bucket == '1 hour' else '3 hours'
             if time_bucket == '1 hour':
@@ -467,13 +529,19 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
         if parsed_end_date:
             sql_query += ' AND DATE(m."Tab_DateTime") <= :end_date'
 
-        if agg_level in ['hourly', 'daily', 'weekly']:
-            if agg_level == 'hourly' and time_bucket == '3 hours':
-                sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
-                    INTERVAL '3 hours' * FLOOR(EXTRACT(HOUR FROM m."Tab_DateTime")::int / 3), l."Station"'''
-            else:
-                period = 'hour' if agg_level == 'hourly' else ('day' if agg_level == 'daily' else 'week')
-                sql_query += f' GROUP BY DATE_TRUNC(\'{period}\', m."Tab_DateTime"), l."Station"'
+        # Add GROUP BY for aggregations
+        if agg_level == '5min':
+            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
+                INTERVAL '5 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 5), l."Station"'''
+        elif agg_level == '15min':
+            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
+                INTERVAL '15 minutes' * FLOOR(EXTRACT(MINUTE FROM m."Tab_DateTime")::int / 15), l."Station"'''
+        elif agg_level == 'hourly' and time_bucket == '3 hours':
+            sql_query += ''' GROUP BY DATE_TRUNC('hour', m."Tab_DateTime") +
+                INTERVAL '3 hours' * FLOOR(EXTRACT(HOUR FROM m."Tab_DateTime")::int / 3), l."Station"'''
+        elif agg_level in ['hourly', 'daily', 'weekly']:
+            period = 'hour' if agg_level == 'hourly' else ('day' if agg_level == 'daily' else 'week')
+            sql_query += f' GROUP BY DATE_TRUNC(\'{period}\', m."Tab_DateTime"), l."Station"'
 
         sql_query += ' ORDER BY "Tab_DateTime" ASC'
 
@@ -520,6 +588,8 @@ def lambda_handler_batch(event, context):
         end_date = params.get('end_date')
         data_source = params.get('data_source', 'default')
         show_anomalies = params.get('show_anomalies', 'false').lower() == 'true'
+        # Performance Optimization P4: include_outliers parameter to merge outliers with data endpoint
+        include_outliers = params.get('include_outliers', 'false').lower() == 'true'
 
         logger.info(f"[BATCH REQUEST] Stations: {stations_list}, range={start_date} to {end_date}")
 
@@ -528,7 +598,7 @@ def lambda_handler_batch(event, context):
             start_date=start_date,
             end_date=end_date,
             data_source=data_source,
-            show_anomalies=show_anomalies
+            show_anomalies=show_anomalies or include_outliers  # Include if either is true
         )
 
         if df.empty:
@@ -602,6 +672,8 @@ def lambda_handler(event, context):
         end_date = params.get('end_date')
         data_source = params.get('data_source', 'default')
         show_anomalies = params.get('show_anomalies', 'false').lower() == 'true'
+        # Performance Optimization P4: include_outliers parameter to merge outliers with data endpoint
+        include_outliers = params.get('include_outliers', 'false').lower() == 'true'
 
         logger.info(f"[REQUEST] Data request: station={station}, range={start_date} to {end_date}")
 
@@ -610,7 +682,7 @@ def lambda_handler(event, context):
             end_date=end_date,
             station=station,
             data_source=data_source,
-            show_anomalies=show_anomalies
+            show_anomalies=show_anomalies or include_outliers  # Include if either is true
         )
 
         if df.empty:

@@ -201,4 +201,4 @@ const WarningsCard = ({ apiBaseUrl }) => {
   );
 };
 
-export default WarningsCard;
+export default React.memo(WarningsCard);

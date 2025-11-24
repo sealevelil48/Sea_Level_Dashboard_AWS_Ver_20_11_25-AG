@@ -39,4 +39,4 @@ const CustomDropdown = ({ value, onChange, options, label }) => {
   );
 };
 
-export default CustomDropdown;
+export default React.memo(CustomDropdown);

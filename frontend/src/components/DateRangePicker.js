@@ -252,4 +252,4 @@ const DateRangePicker = ({ startDate, endDate, onChange }) => {
   );
 };
 
-export default DateRangePicker;
+export default React.memo(DateRangePicker);
