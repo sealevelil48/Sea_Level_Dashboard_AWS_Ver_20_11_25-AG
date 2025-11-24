@@ -747,7 +747,6 @@ function Dashboard() {
                           onClearSelection={handleClearSelection}
                           isFullscreen={isGraphFullscreen}
                           onToggleFullscreen={toggleGraphFullscreen}
-                          onExport={exportGraph}
                           isMobile={isMobile}
                           deltaResult={deltaResult}
                         />

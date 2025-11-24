@@ -13,8 +13,7 @@ const DashboardGraph = ({
   onClearSelection,
   isFullscreen,
   onToggleFullscreen,
-  onExport,
-  _isMobile,
+  isMobile,
   deltaResult
 }) => {
   const plotRef = useRef(null);
@@ -52,11 +51,22 @@ const DashboardGraph = ({
     padding: '10px'
   } : {};
 
+  // Fullscreen button component (reused in two places)
+  const FullscreenButton = () => (
+    <Button
+      variant={isFullscreen ? 'danger' : 'outline-secondary'}
+      size="sm"
+      onClick={onToggleFullscreen}
+    >
+      {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
+    </Button>
+  );
+
   return (
     <div className={containerClass} style={containerStyle}>
       <Card className="graph-card h-100">
         <Card.Body className="p-2">
-          {/* Toolbar */}
+          {/* Toolbar - Only show Clear Selection and Fullscreen on desktop */}
           <div className="d-flex justify-content-between align-items-center mb-2">
             <div>
               {selectedPoints.length > 0 && (
@@ -70,23 +80,8 @@ const DashboardGraph = ({
                 </Button>
               )}
             </div>
-            <div>
-              <Button
-                variant="outline-primary"
-                size="sm"
-                onClick={onExport}
-                className="me-2"
-              >
-                Export
-              </Button>
-              <Button
-                variant={isFullscreen ? 'danger' : 'outline-secondary'}
-                size="sm"
-                onClick={onToggleFullscreen}
-              >
-                {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-              </Button>
-            </div>
+            {/* Fullscreen button on top-right for desktop only */}
+            {!isMobile && <FullscreenButton />}
           </div>
 
           {/* Chart */}
@@ -113,6 +108,13 @@ const DashboardGraph = ({
           {deltaResult && (
             <div className="mt-2">
               <DeltaDisplay deltaResult={deltaResult} onClear={onClearSelection} />
+            </div>
+          )}
+
+          {/* Fullscreen button at bottom for mobile */}
+          {isMobile && (
+            <div className="mt-2 text-center">
+              <FullscreenButton />
             </div>
           )}
         </Card.Body>
