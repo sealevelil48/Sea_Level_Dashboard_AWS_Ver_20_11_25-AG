@@ -49,7 +49,7 @@ function Dashboard() {
   const [forecastData, setForecastData] = useState(null);
   const [stations, setStations] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const isInitialLoadRef = useRef(true);  // Use ref to avoid re-render triggering double-fetch
   const [graphData, setGraphData] = useState([]);
   const [tableData, setTableData] = useState([]);
   const [predictions, setPredictions] = useState({});
@@ -186,7 +186,7 @@ function Dashboard() {
             .catch(() => null)
         ]);
 
-        console.log('Parallel load complete - Stations:', stationsResult.stations?.length, 'Forecast:', forecastResult?.locations?.length);
+        console.log('Parallel load complete - Stations:', stationsResult?.stations?.length || 0, 'Forecast:', forecastResult?.locations?.length || 0);
 
         setStations(stationsResult.stations || []);
         setForecastData(forecastResult);
@@ -722,13 +722,15 @@ function Dashboard() {
         clearTimeout(debounceTimerRef.current);
       }
 
-      const debounceTime = isInitialLoad ? 300 : 1500;
+      // Use ref to avoid double-fetch when state changes
+      const debounceTime = isInitialLoadRef.current ? 300 : 1500;
 
       debounceTimerRef.current = setTimeout(() => {
         if (isMounted.current && !isFetchingRef.current) {
           fetchData();
-          if (isInitialLoad) {
-            setIsInitialLoad(false);
+          // Mark initial load complete (using ref doesn't trigger re-render)
+          if (isInitialLoadRef.current) {
+            isInitialLoadRef.current = false;
           }
         }
       }, debounceTime);
@@ -739,7 +741,7 @@ function Dashboard() {
         }
       };
     }
-  }, [fetchData, stations.length, selectedStations.length, isInitialLoad]);
+  }, [fetchData, stations.length, selectedStations.length]);  // Removed isInitialLoad - using ref instead
   
   // ✅ FIX 2.2: Defer GovMap loading until dashboard is ready
   useEffect(() => {
