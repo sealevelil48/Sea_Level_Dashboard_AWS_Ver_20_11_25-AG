@@ -35,58 +35,66 @@ const DashboardGraph = ({
     onPointSelect(pointData);
   }, [onPointSelect]);
 
-  // Apply fullscreen class
-  const containerClass = isFullscreen
-    ? 'graph-fullscreen-container'
-    : '';
+  // Toolbar height for calculating graph height in fullscreen
+  const toolbarHeight = 50;
 
-  const containerStyle = isFullscreen ? {
+  // Fullscreen container style - covers entire viewport
+  const fullscreenContainerStyle = {
     position: 'fixed',
     top: 0,
     left: 0,
     right: 0,
     bottom: 0,
+    width: '100vw',
+    height: '100vh',
     zIndex: 9999,
-    backgroundColor: '#142950',
-    padding: '10px'
-  } : {};
+    backgroundColor: '#0c1c35',
+    display: 'flex',
+    flexDirection: 'column'
+  };
 
-  // Fullscreen button component (reused in two places)
-  const FullscreenButton = () => (
-    <Button
-      variant={isFullscreen ? 'danger' : 'outline-secondary'}
-      size="sm"
-      onClick={onToggleFullscreen}
-    >
-      {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-    </Button>
-  );
-
-  return (
-    <div className={containerClass} style={containerStyle}>
-      <Card className="graph-card h-100">
-        <Card.Body className="p-2">
-          {/* Toolbar - Only show Clear Selection and Fullscreen on desktop */}
-          <div className="d-flex justify-content-between align-items-center mb-2">
+  // Fullscreen view
+  if (isFullscreen) {
+    return (
+      <div style={fullscreenContainerStyle}>
+        {/* Toolbar at top - only show on desktop */}
+        {!isMobile && (
+          <div
+            style={{
+              height: `${toolbarHeight}px`,
+              padding: '8px 16px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: '#142950',
+              borderBottom: '1px solid #2a4a8c'
+            }}
+          >
             <div>
               {selectedPoints.length > 0 && (
                 <Button
                   variant="outline-warning"
                   size="sm"
                   onClick={onClearSelection}
-                  className="me-2"
                 >
                   Clear Selection ({selectedPoints.length})
                 </Button>
               )}
             </div>
-            {/* Fullscreen button on top-right for desktop only */}
-            {!isMobile && <FullscreenButton />}
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={onToggleFullscreen}
+            >
+              Exit
+            </Button>
           </div>
+        )}
 
-          {/* Chart */}
+        {/* Graph Content - fills remaining space */}
+        <div style={{ flex: 1, overflow: 'hidden', padding: '10px' }}>
           <Suspense fallback={
-            <div className="d-flex justify-content-center align-items-center" style={{ height: '400px' }}>
+            <div className="d-flex justify-content-center align-items-center" style={{ height: '100%' }}>
               <Spinner animation="border" variant="primary" />
             </div>
           }>
@@ -95,7 +103,9 @@ const DashboardGraph = ({
               data={traces}
               layout={{
                 ...layout,
-                height: isFullscreen ? window.innerHeight - 150 : 400
+                height: isMobile
+                  ? window.innerHeight - 80
+                  : window.innerHeight - toolbarHeight - 40
               }}
               config={config}
               onClick={handlePlotClick}
@@ -110,16 +120,106 @@ const DashboardGraph = ({
               <DeltaDisplay deltaResult={deltaResult} onClear={onClearSelection} />
             </div>
           )}
+        </div>
 
-          {/* Fullscreen button at bottom for mobile */}
-          {isMobile && (
-            <div className="mt-2 text-center">
-              <FullscreenButton />
-            </div>
+        {/* Mobile: Exit button at bottom - same style as Table */}
+        {isMobile && (
+          <div
+            style={{
+              position: 'fixed',
+              bottom: '20px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 10000
+            }}
+          >
+            <Button
+              variant="outline-danger"
+              size="sm"
+              className="py-1"
+              onClick={onToggleFullscreen}
+              style={{ fontSize: '0.75rem' }}
+            >
+              Exit Full Screen
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Normal view - with Card wrapper
+  return (
+    <Card className="graph-card h-100">
+      <Card.Body className="p-2">
+        {/* Toolbar - Desktop: button at top-right, Mobile: no button here */}
+        <div className="d-flex justify-content-between align-items-center mb-2">
+          <div>
+            {selectedPoints.length > 0 && (
+              <Button
+                variant="outline-warning"
+                size="sm"
+                onClick={onClearSelection}
+                className="me-2"
+              >
+                Clear Selection ({selectedPoints.length})
+              </Button>
+            )}
+          </div>
+          {/* Desktop only: Fullscreen button at top */}
+          {!isMobile && (
+            <Button
+              variant="outline-primary"
+              size="sm"
+              onClick={onToggleFullscreen}
+            >
+              Fullscreen
+            </Button>
           )}
-        </Card.Body>
-      </Card>
-    </div>
+        </div>
+
+        {/* Chart */}
+        <Suspense fallback={
+          <div className="d-flex justify-content-center align-items-center" style={{ height: '400px' }}>
+            <Spinner animation="border" variant="primary" />
+          </div>
+        }>
+          <Plot
+            ref={plotRef}
+            data={traces}
+            layout={{
+              ...layout,
+              height: 400
+            }}
+            config={config}
+            onClick={handlePlotClick}
+            style={{ width: '100%' }}
+            useResizeHandler={true}
+          />
+        </Suspense>
+
+        {/* Delta Display */}
+        {deltaResult && (
+          <div className="mt-2">
+            <DeltaDisplay deltaResult={deltaResult} onClear={onClearSelection} />
+          </div>
+        )}
+
+        {/* Mobile only: Fullscreen button at bottom */}
+        {isMobile && (
+          <div className="mt-2 text-center">
+            <Button
+              variant="outline-primary"
+              size="sm"
+              onClick={onToggleFullscreen}
+              style={{ minWidth: '120px' }}
+            >
+              Fullscreen
+            </Button>
+          </div>
+        )}
+      </Card.Body>
+    </Card>
   );
 };
 

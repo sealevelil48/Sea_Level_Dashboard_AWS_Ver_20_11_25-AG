@@ -18,6 +18,9 @@ const DashboardMap = ({
   onToggleFullscreen,
   isMobile
 }) => {
+  // Toolbar height for calculating map height in fullscreen
+  const toolbarHeight = 50;
+
   // Fullscreen container style - covers entire viewport
   const fullscreenContainerStyle = {
     position: 'fixed',
@@ -30,24 +33,19 @@ const DashboardMap = ({
     zIndex: 9999,
     backgroundColor: '#0c1c35',
     display: 'flex',
-    flexDirection: 'column'
+    flexDirection: 'column',
+    overflow: 'hidden'
   };
-
-  // Toolbar height for calculating map height in fullscreen
-  const toolbarHeight = 50;
 
   const renderMapContent = () => {
     // Calculate map height based on fullscreen state
-    const mapHeight = isFullscreen
-      ? `calc(100vh - ${toolbarHeight}px)`
-      : '400px';
+    const mapHeight = isFullscreen ? '100%' : '400px';
 
     if (mapTab === 'govmap') {
       return govmapReady ? (
         <div style={{
           width: '100%',
           height: mapHeight,
-          flex: isFullscreen ? 1 : 'none',
           border: isFullscreen ? 'none' : '1px solid #2a4a8c',
           borderRadius: isFullscreen ? '0' : '8px',
           overflow: 'hidden'
@@ -79,8 +77,8 @@ const DashboardMap = ({
     } else if (mapTab === 'osm') {
       return (
         <div style={{
-          height: mapHeight,
-          flex: isFullscreen ? 1 : 'none'
+          width: '100%',
+          height: mapHeight
         }}>
           <Suspense fallback={
             <div className="d-flex justify-content-center align-items-center" style={{ height: '100%' }}>
@@ -105,7 +103,7 @@ const DashboardMap = ({
   if (isFullscreen) {
     return (
       <div style={fullscreenContainerStyle}>
-        {/* Toolbar */}
+        {/* Toolbar at top - Desktop: with Exit button, Mobile: just tabs */}
         <div
           style={{
             height: `${toolbarHeight}px`,
@@ -125,19 +123,45 @@ const DashboardMap = ({
             <Tab eventKey="govmap" title="GovMap" />
             <Tab eventKey="osm" title="OpenStreetMap" />
           </Tabs>
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={onToggleFullscreen}
-          >
-            Exit
-          </Button>
+          {/* Desktop only: Exit button at top */}
+          {!isMobile && (
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={onToggleFullscreen}
+            >
+              Exit
+            </Button>
+          )}
         </div>
 
         {/* Map Content - fills remaining space */}
-        <div style={{ flex: 1, overflow: 'hidden' }}>
+        <div style={{ flex: 1, overflow: 'hidden', width: '100%', height: '100%' }}>
           {renderMapContent()}
         </div>
+
+        {/* Mobile: Exit button at bottom - same style as Table */}
+        {isMobile && (
+          <div
+            style={{
+              position: 'fixed',
+              bottom: '20px',
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 10000
+            }}
+          >
+            <Button
+              variant="outline-danger"
+              size="sm"
+              className="py-1"
+              onClick={onToggleFullscreen}
+              style={{ fontSize: '0.75rem' }}
+            >
+              Exit Full Screen
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -146,7 +170,7 @@ const DashboardMap = ({
   return (
     <Card className="map-card h-100">
       <Card.Body className="p-2">
-        {/* Toolbar */}
+        {/* Toolbar - Desktop: button at top-right, Mobile: no button here */}
         <div className="d-flex justify-content-between align-items-center mb-2">
           <Tabs
             activeKey={mapTab}
@@ -156,10 +180,10 @@ const DashboardMap = ({
             <Tab eventKey="govmap" title="GovMap" />
             <Tab eventKey="osm" title="OpenStreetMap" />
           </Tabs>
-          {/* Desktop: button at top, Mobile: button at bottom */}
+          {/* Desktop only: Fullscreen button at top */}
           {!isMobile && (
             <Button
-              variant="outline-secondary"
+              variant="outline-primary"
               size="sm"
               onClick={onToggleFullscreen}
             >
@@ -171,13 +195,14 @@ const DashboardMap = ({
         {/* Map Content */}
         {renderMapContent()}
 
-        {/* Mobile: fullscreen button at bottom */}
+        {/* Mobile only: Fullscreen button at bottom */}
         {isMobile && (
           <div className="mt-2 text-center">
             <Button
-              variant="outline-secondary"
+              variant="outline-primary"
               size="sm"
               onClick={onToggleFullscreen}
+              style={{ minWidth: '120px' }}
             >
               Fullscreen
             </Button>

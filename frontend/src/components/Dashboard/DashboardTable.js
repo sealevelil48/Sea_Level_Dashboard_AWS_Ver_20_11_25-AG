@@ -84,7 +84,7 @@ const DashboardTable = ({
                 Export Excel
               </Button>
               <Button
-                variant={isFullscreen ? 'danger' : 'outline-secondary'}
+                variant={isFullscreen ? 'danger' : 'outline-primary'}
                 size="sm"
                 onClick={onToggleFullscreen}
               >

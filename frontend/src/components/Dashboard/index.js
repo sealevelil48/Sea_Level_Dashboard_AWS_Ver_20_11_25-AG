@@ -713,7 +713,7 @@ function Dashboard() {
                   <StatsCard
                     label="Avg. Temp"
                     value={stats.avg_temp.toFixed(1)}
-                    unit="deg. C"
+                    unit="°C"
                     isMobile={isMobile}
                   />
                 </Col>
@@ -804,7 +804,7 @@ function Dashboard() {
                                         ) : (
                                           <>
                                             <th>Sea Level (m)</th>
-                                            <th>Temperature (deg. C)</th>
+                                            <th>Temperature (°C)</th>
                                           </>
                                         )}
                                         <th>Anomaly</th>
