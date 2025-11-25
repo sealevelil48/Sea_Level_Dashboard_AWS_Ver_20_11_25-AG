@@ -5,14 +5,14 @@ import { Link } from 'react-router-dom';
 // Hooks
 import { useFilters } from '../../hooks/useFilters';
 import { useStations } from '../../hooks/useStations';
-import { usePlotConfig } from '../../hooks/usePlotConfig';
+import { useChartJsConfig } from '../../hooks/useChartJsConfig';
 import { useFavorites } from '../../hooks/useFavorites';
 
 // Components
 import ErrorBoundary from '../ErrorBoundary';
 import DashboardHeader from './DashboardHeader';
 import DashboardFilters from './DashboardFilters';
-import DashboardGraph from './DashboardGraph';
+import SeaLevelChart from './SeaLevelChart';
 import DashboardMap from './DashboardMap';
 import WarningsCard from '../WarningsCard';
 import StatsCard from '../StatsCard';
@@ -27,6 +27,21 @@ import { calculateDelta } from '../../utils/deltaCalculator';
 import { formatDateTime } from '../../utils/dateUtils';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
+
+/**
+ * Safely format a number to fixed decimal places
+ * Returns fallback value if input is not a valid number
+ * @param {*} value - The value to format
+ * @param {number} decimals - Number of decimal places
+ * @param {string} fallback - Fallback value if invalid
+ * @returns {string} Formatted number or fallback
+ */
+const safeToFixed = (value, decimals = 3, fallback = '0.000') => {
+  if (value === null || value === undefined || typeof value !== 'number' || isNaN(value)) {
+    return fallback;
+  }
+  return value.toFixed(decimals);
+};
 
 function Dashboard() {
   // Use extracted hooks
@@ -81,6 +96,7 @@ function Dashboard() {
   const isFetchingRef = useRef(false);
   const debounceTimerRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const chartRef = useRef(null);
 
   const isMobile = windowWidth < 768;
 
@@ -439,8 +455,8 @@ function Dashboard() {
     }
   }, [filters.predictionModels, filters.forecastHours, selectedStations, fetchPredictions]);
 
-  // Use plot config hook
-  const { traces, layout, config } = usePlotConfig({
+  // Use Chart.js config hook
+  const chartData = useChartJsConfig({
     graphData,
     predictions,
     filters,
@@ -501,14 +517,14 @@ function Dashboard() {
 
   // Export handlers
   const exportGraph = useCallback(() => {
-    const plotElement = document.querySelector('.js-plotly-plot');
-    if (plotElement && window.Plotly) {
-      window.Plotly.downloadImage(plotElement, {
-        format: 'png',
-        width: 1200,
-        height: 600,
-        filename: `sea_level_graph_${selectedStations.join('_')}_${filterValues.endDate}`
-      });
+    if (chartRef.current && chartRef.current.exportAsImage) {
+      const url = chartRef.current.exportAsImage();
+      if (url) {
+        const link = document.createElement('a');
+        link.download = `sea_level_graph_${selectedStations.join('_')}_${filterValues.endDate}.png`;
+        link.href = url;
+        link.click();
+      }
     }
   }, [selectedStations, filterValues.endDate]);
 
@@ -690,41 +706,33 @@ function Dashboard() {
                 </Row>
               )}
 
-              {/* Stats Row */}
-              <Row className="mb-3">
-                <Col xs={6} sm={6} md={3} className="mb-2">
-                  <StatsCard
-                    label="Current Level"
-                    value={stats.current_level.toFixed(3)}
-                    unit="m"
-                    isMobile={isMobile}
-                  />
-                </Col>
-                <Col xs={6} sm={6} md={3} className="mb-2">
-                  <StatsCard
-                    label="24h Change"
-                    value={`${stats['24h_change'] >= 0 ? '+' : ''}${stats['24h_change'].toFixed(3)}`}
-                    unit="m"
-                    colorClass={stats['24h_change'] >= 0 ? 'green' : 'red'}
-                    isMobile={isMobile}
-                  />
-                </Col>
-                <Col xs={6} sm={6} md={3} className="mb-2">
-                  <StatsCard
-                    label="Avg. Temp"
-                    value={stats.avg_temp.toFixed(1)}
-                    unit="°C"
-                    isMobile={isMobile}
-                  />
-                </Col>
-                <Col xs={6} sm={6} md={3} className="mb-2">
-                  <StatsCard
-                    label="Anomalies"
-                    value={stats.anomalies}
-                    isMobile={isMobile}
-                  />
-                </Col>
-              </Row>
+              {/* Stats Grid - Responsive KPI Cards */}
+              <div className="kpi-grid">
+                <StatsCard
+                  label="Current Level"
+                  value={safeToFixed(stats.current_level, 3, '0.000')}
+                  unit="m"
+                  isMobile={isMobile}
+                />
+                <StatsCard
+                  label="24h Change"
+                  value={`${stats['24h_change'] >= 0 ? '+' : ''}${safeToFixed(stats['24h_change'], 3, '0.000')}`}
+                  unit="m"
+                  colorClass={stats['24h_change'] >= 0 ? 'green' : 'red'}
+                  isMobile={isMobile}
+                />
+                <StatsCard
+                  label="Avg. Temp"
+                  value={safeToFixed(stats.avg_temp, 1, '0.0')}
+                  unit="°C"
+                  isMobile={isMobile}
+                />
+                <StatsCard
+                  label="Anomalies"
+                  value={stats.anomalies}
+                  isMobile={isMobile}
+                />
+              </div>
 
               {/* Main Tabs */}
               <Card>
@@ -738,21 +746,152 @@ function Dashboard() {
                           <p className="mt-2">Loading data...</p>
                         </div>
                       ) : graphData.length > 0 ? (
-                        <DashboardGraph
-                          traces={traces}
-                          layout={layout}
-                          config={config}
-                          selectedPoints={selectedPoints}
-                          onPointSelect={handlePointSelect}
-                          onClearSelection={handleClearSelection}
-                          isFullscreen={isGraphFullscreen}
-                          onToggleFullscreen={toggleGraphFullscreen}
-                          isMobile={isMobile}
-                          deltaResult={deltaResult}
-                        />
+                        <div className="dashboard-chart-wrapper" style={{
+                          height: isGraphFullscreen ? '100vh' : '500px',
+                          position: isGraphFullscreen ? 'fixed' : 'relative',
+                          top: isGraphFullscreen ? 0 : 'auto',
+                          left: isGraphFullscreen ? 0 : 'auto',
+                          right: isGraphFullscreen ? 0 : 'auto',
+                          bottom: isGraphFullscreen ? 0 : 'auto',
+                          zIndex: isGraphFullscreen ? 9999 : 'auto'
+                        }}>
+                          {/* Fullscreen button - PC: top right, Mobile: shown below chart */}
+                          {!isGraphFullscreen && !isMobile && (
+                            <Button
+                              variant="outline-primary"
+                              size="sm"
+                              onClick={toggleGraphFullscreen}
+                              style={{
+                                position: 'absolute',
+                                top: '10px',
+                                right: '10px',
+                                zIndex: 100,
+                                fontSize: '0.75rem'
+                              }}
+                            >
+                              Full Screen
+                            </Button>
+                          )}
+                          {/* Exit fullscreen button - centered at bottom */}
+                          {isGraphFullscreen && (
+                            <div style={{
+                              position: 'fixed',
+                              bottom: '20px',
+                              left: '50%',
+                              transform: 'translateX(-50%)',
+                              zIndex: 10000
+                            }}>
+                              <Button
+                                variant="outline-danger"
+                                size="sm"
+                                className="py-1"
+                                onClick={toggleGraphFullscreen}
+                                style={{ fontSize: '0.75rem' }}
+                              >
+                                Exit Full Screen
+                              </Button>
+                            </div>
+                          )}
+                          {selectedPoints.length > 0 && !isGraphFullscreen && (
+                            <Button
+                              variant="warning"
+                              size="sm"
+                              onClick={handleClearSelection}
+                              style={{
+                                position: 'absolute',
+                                top: isMobile ? 'auto' : '10px',
+                                bottom: isMobile ? '10px' : 'auto',
+                                right: !isMobile ? '120px' : '10px',
+                                zIndex: 100,
+                                backgroundColor: '#fbbf24',
+                                borderColor: '#fbbf24',
+                                color: '#000',
+                                fontSize: '0.75rem'
+                              }}
+                            >
+                              Clear ({selectedPoints.length})
+                            </Button>
+                          )}
+                          <SeaLevelChart
+                            ref={chartRef}
+                            data={chartData}
+                            activeStations={selectedStations}
+                            isMobile={isMobile}
+                            isFullscreen={isGraphFullscreen}
+                            onPointClick={handlePointSelect}
+                          />
+                          {deltaResult && (
+                            <div style={{
+                              position: 'absolute',
+                              bottom: '20px',
+                              right: '20px',
+                              backgroundColor: 'rgba(15, 23, 42, 0.95)',
+                              padding: '15px',
+                              borderRadius: '8px',
+                              border: '1px solid rgba(59, 130, 246, 0.3)',
+                              color: 'white',
+                              minWidth: '250px',
+                              zIndex: 100
+                            }}>
+                              <h6 style={{ color: '#60a5fa', marginBottom: '10px' }}>Delta Comparison</h6>
+                              <div style={{ fontSize: '0.9em', marginBottom: '8px' }}>
+                                <strong>{deltaResult.point1?.station}:</strong> {safeToFixed(deltaResult.point1?.value, 3, 'N/A')} m
+                              </div>
+                              <div style={{ fontSize: '0.9em', marginBottom: '8px' }}>
+                                <strong>{deltaResult.point2?.station}:</strong> {safeToFixed(deltaResult.point2?.value, 3, 'N/A')} m
+                              </div>
+                              <div style={{
+                                fontSize: '1em',
+                                fontWeight: 'bold',
+                                color: '#fbbf24',
+                                marginTop: '10px',
+                                marginBottom: '8px'
+                              }}>
+                                Delta: {safeToFixed(deltaResult.delta?.valueDelta, 3, 'N/A')} m
+                                {deltaResult.delta && !deltaResult.delta.isEqual && (
+                                  <span style={{ marginLeft: '5px' }}>
+                                    {deltaResult.delta.isPoint1Higher ? '↑' : '↓'}
+                                  </span>
+                                )}
+                              </div>
+                              {deltaResult.delta?.percentageDifference !== undefined && (
+                                <div style={{ fontSize: '0.85em', color: '#9ca3af', marginBottom: '8px' }}>
+                                  Change: {safeToFixed(deltaResult.delta.percentageDifference, 2, 'N/A')}%
+                                </div>
+                              )}
+                              {deltaResult.timeDelta && (
+                                <div style={{ fontSize: '0.85em', color: '#9ca3af', marginBottom: '8px' }}>
+                                  Time span: {deltaResult.timeDelta.formattedString}
+                                </div>
+                              )}
+                              <Button
+                                variant="outline-danger"
+                                size="sm"
+                                onClick={handleClearSelection}
+                                style={{ marginTop: '10px', width: '100%' }}
+                              >
+                                Clear Selection
+                              </Button>
+                            </div>
+                          )}
+                        </div>
                       ) : (
                         <div className="text-center p-5">
                           <p>No data to display. Select a station to view data.</p>
+                        </div>
+                      )}
+                      {/* Graph Fullscreen Button (Mobile) */}
+                      {!isGraphFullscreen && isMobile && graphData.length > 0 && (
+                        <div className="mt-2 text-center">
+                          <Button
+                            variant="outline-primary"
+                            size="sm"
+                            className="py-1"
+                            onClick={toggleGraphFullscreen}
+                            style={{ fontSize: '0.75rem' }}
+                          >
+                            Full Screen
+                          </Button>
                         </div>
                       )}
                       {/* Model Status Indicator */}
@@ -821,18 +960,18 @@ function Dashboard() {
                                             <td>{row.Station}</td>
                                             {filters.dataType === 'tides' ? (
                                               <>
-                                                <td>{row.HighTide?.toFixed(3) || 'N/A'}</td>
-                                                <td>{row.LowTide?.toFixed(3) || 'N/A'}</td>
+                                                <td>{safeToFixed(row.HighTide, 3, 'N/A')}</td>
+                                                <td>{safeToFixed(row.LowTide, 3, 'N/A')}</td>
                                               </>
                                             ) : (
                                               <>
-                                                <td>{row.Tab_Value_mDepthC1?.toFixed(3) || 'N/A'}</td>
-                                                <td>{row.Tab_Value_monT2m?.toFixed(1) || 'N/A'}</td>
+                                                <td>{safeToFixed(row.Tab_Value_mDepthC1, 3, 'N/A')}</td>
+                                                <td>{safeToFixed(row.Tab_Value_monT2m, 1, 'N/A')}</td>
                                               </>
                                             )}
                                             <td>{row.anomaly || 0}</td>
-                                            {filters.trendline !== 'none' && <td>{typeof row.trendlineValue === 'number' ? row.trendlineValue.toFixed(3) : row.trendlineValue}</td>}
-                                            {filters.analysisType !== 'none' && <td>{typeof row.analysisValue === 'number' ? row.analysisValue.toFixed(3) : row.analysisValue}</td>}
+                                            {filters.trendline !== 'none' && <td>{safeToFixed(row.trendlineValue, 3, 'N/A')}</td>}
+                                            {filters.analysisType !== 'none' && <td>{safeToFixed(row.analysisValue, 3, 'N/A')}</td>}
                                           </tr>
                                         ))}
                                     </tbody>
@@ -915,15 +1054,15 @@ function Dashboard() {
                                               </Badge>
                                             </td>
                                             <td>{row.datetime.replace('T', ' ').replace(/\.\d+Z$/, '')}</td>
-                                            <td>{typeof row.value === 'number' ? row.value.toFixed(3) : 'N/A'}</td>
+                                            <td>{safeToFixed(row.value, 3, 'N/A')}</td>
                                             <td>
                                               <Badge bg={row.type === 'nowcast' ? 'primary' : 'secondary'}>
                                                 {row.type || 'forecast'}
                                               </Badge>
                                             </td>
                                             <td>
-                                              {row.uncertainty ? `+/-${row.uncertainty.toFixed(3)}` :
-                                                (row.upper && row.lower) ? `${row.lower.toFixed(3)} - ${row.upper.toFixed(3)}` : 'N/A'}
+                                              {row.uncertainty ? `+/-${safeToFixed(row.uncertainty, 3, 'N/A')}` :
+                                                (row.upper && row.lower) ? `${safeToFixed(row.lower, 3, 'N/A')} - ${safeToFixed(row.upper, 3, 'N/A')}` : 'N/A'}
                                             </td>
                                           </tr>
                                         ))}
