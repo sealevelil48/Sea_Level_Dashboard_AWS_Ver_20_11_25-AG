@@ -115,9 +115,22 @@ const DashboardGraph = ({
           </Suspense>
 
           {/* Delta Display */}
-          {deltaResult && (
+          {deltaResult && deltaResult.success && (
             <div className="mt-2">
-              <DeltaDisplay deltaResult={deltaResult} onClear={onClearSelection} />
+              <DeltaDisplay
+                station1={{
+                  name: deltaResult.point1.station,
+                  value: deltaResult.point1.value,
+                  timestamp: deltaResult.point1.timestamp
+                }}
+                station2={{
+                  name: deltaResult.point2.station,
+                  value: deltaResult.point2.value,
+                  timestamp: deltaResult.point2.timestamp
+                }}
+                delta={deltaResult.delta.valueDelta}
+                onClear={onClearSelection}
+              />
             </div>
           )}
         </div>
@@ -199,9 +212,22 @@ const DashboardGraph = ({
         </Suspense>
 
         {/* Delta Display */}
-        {deltaResult && (
+        {deltaResult && deltaResult.success && (
           <div className="mt-2">
-            <DeltaDisplay deltaResult={deltaResult} onClear={onClearSelection} />
+            <DeltaDisplay
+              station1={{
+                name: deltaResult.point1.station,
+                value: deltaResult.point1.value,
+                timestamp: deltaResult.point1.timestamp
+              }}
+              station2={{
+                name: deltaResult.point2.station,
+                value: deltaResult.point2.value,
+                timestamp: deltaResult.point2.timestamp
+              }}
+              delta={deltaResult.delta.valueDelta}
+              onClear={onClearSelection}
+            />
           </div>
         )}
 
