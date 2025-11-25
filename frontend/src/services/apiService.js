@@ -158,7 +158,11 @@ class ApiService {
       if (params.start_date) queryParams.append('start_date', params.start_date);
       if (params.end_date) queryParams.append('end_date', params.end_date);
       if (params.data_source) queryParams.append('data_source', params.data_source);
+
+      // Support both parameter names for anomaly detection
       if (params.show_anomalies) queryParams.append('show_anomalies', params.show_anomalies);
+      if (params.include_outliers) queryParams.append('include_outliers', params.include_outliers);
+
       if (params.limit) queryParams.append('limit', params.limit);
 
       const data = await this.request(`/api/data?${queryParams}`);
@@ -189,7 +193,12 @@ class ApiService {
       if (params.start_date) queryParams.append('start_date', params.start_date);
       if (params.end_date) queryParams.append('end_date', params.end_date);
       if (params.data_source) queryParams.append('data_source', params.data_source);
+
+      // Support both parameter names for anomaly detection
       if (params.show_anomalies) queryParams.append('show_anomalies', params.show_anomalies);
+      if (params.include_outliers) queryParams.append('include_outliers', params.include_outliers);
+
+      console.log('[apiService] Batch request params:', Object.fromEntries(queryParams));
 
       const data = await this.request(`/api/data/batch?${queryParams}`);
       return Array.isArray(data) ? data : [];

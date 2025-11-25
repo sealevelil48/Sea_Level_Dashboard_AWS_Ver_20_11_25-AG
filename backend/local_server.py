@@ -534,7 +534,8 @@ async def get_data_batch(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     data_source: str = "default",
-    show_anomalies: bool = False
+    show_anomalies: bool = False,
+    include_outliers: bool = False
 ):
     """Get historical data for multiple stations in a single query (batch endpoint)"""
     try:
@@ -551,7 +552,8 @@ async def get_data_batch(
                 "start_date": start_date,
                 "end_date": end_date,
                 "data_source": data_source,
-                "show_anomalies": str(show_anomalies).lower()
+                "show_anomalies": str(show_anomalies).lower(),
+                "include_outliers": str(include_outliers).lower()
             }
         }
         response = lambda_handler_batch(event, None)

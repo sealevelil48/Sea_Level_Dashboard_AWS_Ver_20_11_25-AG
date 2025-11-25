@@ -346,6 +346,22 @@ function Dashboard() {
       }
 
       if (isMounted.current) {
+        // Log anomaly data if showAnomalies is enabled
+        if (filterValues.showAnomalies && allData.length > 0) {
+          const anomalyCount = allData.filter(d => d.anomaly === -1).length;
+          const totalCount = allData.length;
+          const anomalyValues = [...new Set(allData.map(d => d.anomaly))];
+          console.log(`[Dashboard] Anomaly detection enabled:`, {
+            totalPoints: totalCount,
+            anomaliesFound: anomalyCount,
+            anomalyValues: anomalyValues,
+            percentage: ((anomalyCount / totalCount) * 100).toFixed(2) + '%'
+          });
+          if (anomalyCount > 0) {
+            console.log(`[Dashboard] Sample anomaly point:`, allData.find(d => d.anomaly === -1));
+          }
+        }
+
         setGraphData(allData || []);
 
         // Sort data in DESC order by default (newest first)

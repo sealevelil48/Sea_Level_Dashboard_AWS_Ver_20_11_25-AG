@@ -160,8 +160,8 @@ const DashboardFilters = ({
                     type="checkbox"
                     id="kalman-check"
                     label="Kalman Filter"
-                    checked={filters.predictionModels?.includes('kalman') || false}
-                    onChange={() => onModelChange('kalman')}
+                    checked={filters.predictionModels?.includes('kalman_filter') || false}
+                    onChange={() => onModelChange('kalman_filter')}
                     className="small"
                   />
                   <Form.Check

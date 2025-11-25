@@ -409,15 +409,41 @@ def ensemble_predict(station: str, steps: int = 240) -> Optional[List[Dict]]:
     return ensemble_result
 
 
+def normalize_model_name(model_name: str) -> str:
+    """
+    Normalize model names to handle variations from frontend.
+    Maps 'kalman_filter' -> 'kalman' while preserving other model names.
+
+    Args:
+        model_name: Raw model name from request
+
+    Returns:
+        Normalized model name
+    """
+    model_mapping = {
+        'kalman_filter': 'kalman',
+        'kalman': 'kalman',
+        'ensemble': 'ensemble',
+        'arima': 'arima',
+        'prophet': 'prophet',
+        'all': 'all'
+    }
+    normalized = model_mapping.get(model_name, model_name)
+    logger.info(f"Normalized model name: '{model_name}' -> '{normalized}'")
+    return normalized
+
+
 def lambda_handler(event, context):
     """Lambda handler for predictions - supports multiple stations"""
     try:
         # Parse parameters
         params = event.get('queryStringParameters') or {}
         logger.info(f"Received params: {params}")
-        
+
         stations_param = params.get('stations') or params.get('station')
-        models = [m.strip().lower() for m in params.get('model', 'kalman').split(',')]
+        raw_models = [m.strip().lower() for m in params.get('model', 'kalman').split(',')]
+        # Normalize model names to handle frontend variations
+        models = [normalize_model_name(m) for m in raw_models]
         steps = int(params.get('steps', 240))
         
         logger.info(f"stations_param: {stations_param}")

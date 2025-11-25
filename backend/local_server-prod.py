@@ -59,7 +59,7 @@ async def data(station: str = None, start_date: str = None, end_date: str = None
 @app.get("/data/batch")
 @app.get("/api/data/batch")
 async def data_batch(stations: str = None, start_date: str = None, end_date: str = None,
-                     data_source: str = "default", show_anomalies: bool = False):
+                     data_source: str = "default", show_anomalies: bool = False, include_outliers: bool = False):
     """Batch endpoint to fetch data for multiple stations in a single query"""
     from lambdas.get_data.main import lambda_handler_batch
 
@@ -69,7 +69,8 @@ async def data_batch(stations: str = None, start_date: str = None, end_date: str
             "start_date": start_date,
             "end_date": end_date,
             "data_source": data_source,
-            "show_anomalies": str(show_anomalies).lower()
+            "show_anomalies": str(show_anomalies).lower(),
+            "include_outliers": str(include_outliers).lower()
         }
     }
     response = lambda_handler_batch(event, None)

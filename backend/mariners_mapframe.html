@@ -136,9 +136,16 @@
         
         async function fetchMarinersData() {
             try {
-                const response = await fetch('/api/mariners-forecast');
+                // Get the API base URL from parent window or use default
+                const apiBaseUrl = window.location.origin;
+                const response = await fetch(`${apiBaseUrl}/api/mariners-forecast`);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
                 const data = await response.json();
-                
+
                 if (data.locations) {
                     data.locations.forEach(location => {
                         const coords = locationCoords[location.name_eng];
@@ -146,9 +153,31 @@
                             addLocationMarker(location, coords);
                         }
                     });
+                } else {
+                    console.error('No locations data in response:', data);
                 }
             } catch (error) {
                 console.error('Error fetching mariners data:', error);
+                // Display error message on map
+                document.getElementById('map').innerHTML = `
+                    <div style="
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        height: 100%;
+                        background: #f8f9fa;
+                        color: #dc3545;
+                        font-size: 16px;
+                        padding: 20px;
+                        text-align: center;
+                    ">
+                        <div>
+                            <h4>Error Loading Mariners Forecast Map</h4>
+                            <p>${error.message}</p>
+                            <p style="font-size: 14px; color: #6c757d;">Please check that the backend API is running.</p>
+                        </div>
+                    </div>
+                `;
             }
         }
         

@@ -151,14 +151,16 @@ export const useChartJsConfig = ({
       return { datasets: [] };
     }
 
-    // Station colors (matching original Plotly colors)
+    // Station colors - each station gets a unique, distinct color
     const stationColors = {
-      'Acre': '#00bfff',      // Cyan
+      'Acre': '#00bfff',      // Cyan/Sky Blue
       'Ashdod': '#ff7f0e',    // Orange
-      'Hadera': '#2ca02c',    // Green
-      'Tel-Aviv': '#d62728',  // Red
-      'Haifa': '#9467bd',     // Purple
       'Ashkelon': '#8c564b',  // Brown
+      'Eilat': '#e377c2',     // Pink/Magenta
+      'Haifa': '#9467bd',     // Purple
+      'Yafo': '#2ca02c',      // Green
+      'Tel-Aviv': '#d62728',  // Red (fallback)
+      'Hadera': '#17becf',    // Teal (fallback)
     };
 
     // Get default color for unknown stations
@@ -215,14 +217,33 @@ export const useChartJsConfig = ({
 
     // Add anomalies if enabled
     if (filters.showAnomalies) {
+      console.log('[useChartJsConfig] Anomaly detection enabled');
+      console.log('[useChartJsConfig] Total data points:', graphData.length);
+
+      // Check what anomaly values exist in the data
+      const anomalyValues = [...new Set(graphData.map(point => point.anomaly))];
+      console.log('[useChartJsConfig] Anomaly values in data:', anomalyValues);
+
+      // Count anomalies by value
+      const anomalyCounts = {};
+      graphData.forEach(point => {
+        const val = point.anomaly ?? 'undefined';
+        anomalyCounts[val] = (anomalyCounts[val] || 0) + 1;
+      });
+      console.log('[useChartJsConfig] Anomaly counts:', anomalyCounts);
+
       const anomalyPoints = graphData
         .filter(point => point.anomaly === -1)
         .map(point => ({
           x: new Date(point.Tab_DateTime),
-          y: point.Tab_Value_mDepthC1
+          y: point.Tab_Value_mDepthC1,
+          station: point.Station
         }));
 
+      console.log('[useChartJsConfig] Filtered anomaly points:', anomalyPoints.length);
+
       if (anomalyPoints.length > 0) {
+        console.log('[useChartJsConfig] Adding anomaly dataset to chart');
         datasets.push({
           label: 'Anomalies',
           data: anomalyPoints,
@@ -233,126 +254,184 @@ export const useChartJsConfig = ({
           showLine: false,
           pointHoverRadius: 8,
         });
+      } else {
+        console.log('[useChartJsConfig] No anomaly points found with anomaly === -1');
       }
+    } else {
+      console.log('[useChartJsConfig] Anomaly detection disabled');
     }
 
     // Add prediction models
-    if (predictions && filters.predictionModels) {
-      // Kalman Filter predictions
-      if (filters.predictionModels.includes('kalman_filter') && predictions.kalman) {
-        const kalmanData = predictions.kalman.map(point => ({
-          x: new Date(point.ds),
-          y: point.yhat
-        }));
+    // Note: API returns predictions in nested structure: { StationName: { kalman: [...], ensemble: [...], etc } }
+    if (predictions && filters.predictionModels && Object.keys(predictions).length > 0) {
+      console.log('[useChartJsConfig] Processing predictions:', {
+        stationKeys: Object.keys(predictions),
+        enabledModels: filters.predictionModels,
+        predictionsStructure: Object.entries(predictions).map(([key, val]) => ({
+          station: key,
+          models: typeof val === 'object' ? Object.keys(val) : 'invalid'
+        }))
+      });
 
-        datasets.push({
-          label: 'Kalman Filter',
-          data: kalmanData,
-          borderColor: '#00bfff',
-          backgroundColor: '#00bfff',
-          borderWidth: 2,
-          borderDash: [5, 5], // Dashed line for predictions
-          pointRadius: 0,
-          tension: 0.4,
-          fill: false,
-        });
+      // Prediction colors for different models
+      const predictionColors = {
+        kalman_filter: '#00bfff',  // Cyan
+        ensemble: '#ff7f0e',       // Orange
+        arima: '#2ca02c',          // Green
+        prophet: '#9467bd'         // Purple
+      };
 
-        // Add confidence intervals (only for first station to avoid clutter)
-        if (predictions.kalman[0] && predictions.kalman[0].yhat_upper) {
-          const upperBand = predictions.kalman.map(point => ({
+      // Track if we've added confidence intervals (only add for first station)
+      let confidenceIntervalsAdded = false;
+
+      // Iterate through each station's predictions
+      Object.entries(predictions).forEach(([stationKey, stationPredictions]) => {
+        // Skip metadata or invalid entries
+        if (stationKey === 'global_metadata' || !stationPredictions || typeof stationPredictions !== 'object') {
+          return;
+        }
+
+        // Kalman Filter predictions
+        if (filters.predictionModels.includes('kalman_filter') &&
+            stationPredictions.kalman &&
+            Array.isArray(stationPredictions.kalman) &&
+            stationPredictions.kalman.length > 0) {
+          const kalmanData = stationPredictions.kalman.map(point => ({
             x: new Date(point.ds),
-            y: point.yhat_upper
+            y: point.yhat
           }));
-          const lowerBand = predictions.kalman.map(point => ({
-            x: new Date(point.ds),
-            y: point.yhat_lower
-          }));
+
+          console.log(`[useChartJsConfig] Adding Kalman Filter for ${stationKey}: ${kalmanData.length} points`);
 
           datasets.push({
-            label: 'Kalman 95% CI (Upper)',
-            data: upperBand,
-            borderColor: 'rgba(0, 191, 255, 0.3)',
-            backgroundColor: 'rgba(0, 191, 255, 0.1)',
-            borderWidth: 1,
-            borderDash: [2, 2],
+            label: `${stationKey} - Kalman Filter`,
+            data: kalmanData,
+            borderColor: predictionColors.kalman_filter,
+            backgroundColor: predictionColors.kalman_filter,
+            borderWidth: 2,
+            borderDash: [5, 5], // Dashed line for predictions
             pointRadius: 0,
             tension: 0.4,
-            fill: '+1', // Fill to next dataset
+            fill: false,
           });
 
+          // Add confidence intervals (only for first station to avoid clutter)
+          if (!confidenceIntervalsAdded &&
+              stationPredictions.kalman[0] &&
+              stationPredictions.kalman[0].yhat_upper !== undefined &&
+              stationPredictions.kalman[0].yhat_lower !== undefined) {
+            const upperBand = stationPredictions.kalman.map(point => ({
+              x: new Date(point.ds),
+              y: point.yhat_upper
+            }));
+            const lowerBand = stationPredictions.kalman.map(point => ({
+              x: new Date(point.ds),
+              y: point.yhat_lower
+            }));
+
+            datasets.push({
+              label: `${stationKey} - Kalman 95% CI (Upper)`,
+              data: upperBand,
+              borderColor: 'rgba(0, 191, 255, 0.3)',
+              backgroundColor: 'rgba(0, 191, 255, 0.1)',
+              borderWidth: 1,
+              borderDash: [2, 2],
+              pointRadius: 0,
+              tension: 0.4,
+              fill: '+1', // Fill to next dataset
+            });
+
+            datasets.push({
+              label: `${stationKey} - Kalman 95% CI (Lower)`,
+              data: lowerBand,
+              borderColor: 'rgba(0, 191, 255, 0.3)',
+              backgroundColor: 'rgba(0, 191, 255, 0.1)',
+              borderWidth: 1,
+              borderDash: [2, 2],
+              pointRadius: 0,
+              tension: 0.4,
+              fill: false,
+            });
+
+            confidenceIntervalsAdded = true;
+          }
+        }
+
+        // Ensemble predictions
+        if (filters.predictionModels.includes('ensemble') &&
+            stationPredictions.ensemble &&
+            Array.isArray(stationPredictions.ensemble) &&
+            stationPredictions.ensemble.length > 0) {
+          const ensembleData = stationPredictions.ensemble.map(point => ({
+            x: new Date(point.ds),
+            y: point.yhat
+          }));
+
+          console.log(`[useChartJsConfig] Adding Ensemble for ${stationKey}: ${ensembleData.length} points`);
+
           datasets.push({
-            label: 'Kalman 95% CI (Lower)',
-            data: lowerBand,
-            borderColor: 'rgba(0, 191, 255, 0.3)',
-            backgroundColor: 'rgba(0, 191, 255, 0.1)',
-            borderWidth: 1,
-            borderDash: [2, 2],
+            label: `${stationKey} - Ensemble`,
+            data: ensembleData,
+            borderColor: predictionColors.ensemble,
+            backgroundColor: predictionColors.ensemble,
+            borderWidth: 2,
+            borderDash: [10, 5], // Different dash pattern
             pointRadius: 0,
             tension: 0.4,
             fill: false,
           });
         }
-      }
 
-      // Ensemble predictions
-      if (filters.predictionModels.includes('ensemble') && predictions.ensemble) {
-        const ensembleData = predictions.ensemble.map(point => ({
-          x: new Date(point.ds),
-          y: point.yhat
-        }));
+        // ARIMA predictions
+        if (filters.predictionModels.includes('arima') &&
+            stationPredictions.arima &&
+            Array.isArray(stationPredictions.arima) &&
+            stationPredictions.arima.length > 0) {
+          const arimaData = stationPredictions.arima.map(point => ({
+            x: new Date(point.ds),
+            y: point.yhat
+          }));
 
-        datasets.push({
-          label: 'Ensemble',
-          data: ensembleData,
-          borderColor: '#ff7f0e',
-          backgroundColor: '#ff7f0e',
-          borderWidth: 2,
-          borderDash: [10, 5], // Different dash pattern
-          pointRadius: 0,
-          tension: 0.4,
-          fill: false,
-        });
-      }
+          console.log(`[useChartJsConfig] Adding ARIMA for ${stationKey}: ${arimaData.length} points`);
 
-      // ARIMA predictions
-      if (filters.predictionModels.includes('arima') && predictions.arima) {
-        const arimaData = predictions.arima.map(point => ({
-          x: new Date(point.ds),
-          y: point.yhat
-        }));
+          datasets.push({
+            label: `${stationKey} - ARIMA`,
+            data: arimaData,
+            borderColor: predictionColors.arima,
+            backgroundColor: predictionColors.arima,
+            borderWidth: 2,
+            borderDash: [2, 2], // Dotted line
+            pointRadius: 0,
+            tension: 0.4,
+            fill: false,
+          });
+        }
 
-        datasets.push({
-          label: 'ARIMA',
-          data: arimaData,
-          borderColor: '#2ca02c',
-          backgroundColor: '#2ca02c',
-          borderWidth: 2,
-          borderDash: [2, 2], // Dotted line
-          pointRadius: 0,
-          tension: 0.4,
-          fill: false,
-        });
-      }
+        // Prophet predictions
+        if (filters.predictionModels.includes('prophet') &&
+            stationPredictions.prophet &&
+            Array.isArray(stationPredictions.prophet) &&
+            stationPredictions.prophet.length > 0) {
+          const prophetData = stationPredictions.prophet.map(point => ({
+            x: new Date(point.ds),
+            y: point.yhat
+          }));
 
-      // Prophet predictions
-      if (filters.predictionModels.includes('prophet') && predictions.prophet) {
-        const prophetData = predictions.prophet.map(point => ({
-          x: new Date(point.ds),
-          y: point.yhat
-        }));
+          console.log(`[useChartJsConfig] Adding Prophet for ${stationKey}: ${prophetData.length} points`);
 
-        datasets.push({
-          label: 'Prophet',
-          data: prophetData,
-          borderColor: '#9467bd',
-          backgroundColor: '#9467bd',
-          borderWidth: 2,
-          borderDash: [5, 2, 2, 2], // Dash-dot pattern
-          pointRadius: 0,
-          tension: 0.4,
-          fill: false,
-        });
-      }
+          datasets.push({
+            label: `${stationKey} - Prophet`,
+            data: prophetData,
+            borderColor: predictionColors.prophet,
+            backgroundColor: predictionColors.prophet,
+            borderWidth: 2,
+            borderDash: [5, 2, 2, 2], // Dash-dot pattern
+            pointRadius: 0,
+            tension: 0.4,
+            fill: false,
+          });
+        }
+      });
     }
 
     // Add trendlines

@@ -22,6 +22,15 @@ except ImportError as e:
     print(f"[ERROR] Database import error in get_data: {e}")
     DATABASE_AVAILABLE = False
 
+# Import Southern Baseline Rules for outlier detection
+try:
+    from shared.baseline_integration import BaselineIntegratedProcessor
+    BASELINE_RULES_AVAILABLE = True
+    print("[OK] Southern Baseline Rules imported successfully")
+except ImportError as e:
+    print(f"[WARNING] Southern Baseline Rules not available: {e}")
+    BASELINE_RULES_AVAILABLE = False
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -90,37 +99,94 @@ def calculate_aggregation_level(start_date, end_date):
         return 'raw', None
 
 def detect_anomalies(df):
-    """Simple anomaly detection using IQR method"""
+    """
+    Anomaly detection using Southern Baseline Rules when available,
+    fallback to IQR method if not available
+    """
     if 'Tab_Value_mDepthC1' not in df.columns or df.empty:
         return df
-        
+
+    # Use Southern Baseline Rules if available
+    if BASELINE_RULES_AVAILABLE:
+        try:
+            logger.info(f"[BASELINE] Applying Southern Baseline Rules to {len(df)} records")
+            processor = BaselineIntegratedProcessor()
+            df_processed = processor.detect_anomalies_with_rules(df)
+
+            # The processor sets 'anomaly' field based on 'Is_Outlier'
+            # Verify anomaly field exists and log results
+            if 'anomaly' in df_processed.columns:
+                anomaly_count = sum(df_processed['anomaly'] == -1)
+                if anomaly_count > 0:
+                    logger.info(f"[BASELINE] Detected {anomaly_count} outliers using Southern Baseline Rules")
+                    # Log some details
+                    outliers = df_processed[df_processed['anomaly'] == -1]
+                    for station in outliers['Station'].unique():
+                        station_outliers = outliers[outliers['Station'] == station]
+                        logger.info(f"  {station}: {len(station_outliers)} outliers")
+            else:
+                logger.warning("[BASELINE] No anomaly field in processed data, adding default")
+                df_processed['anomaly'] = 0
+
+            return df_processed
+
+        except Exception as e:
+            logger.error(f"[BASELINE] Error applying Southern Baseline Rules: {e}")
+            logger.error(f"[BASELINE] Falling back to IQR method")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Fall through to IQR method
+
+    # Fallback: Simple IQR method
+    logger.info(f"[IQR] Using IQR method for anomaly detection")
     try:
         valid_values = df['Tab_Value_mDepthC1'].dropna()
-        
+
         if len(valid_values) > 10:
             Q1 = valid_values.quantile(0.25)
             Q3 = valid_values.quantile(0.75)
             IQR = Q3 - Q1
-            
+
             lower_bound = Q1 - 1.5 * IQR
             upper_bound = Q3 + 1.5 * IQR
-            
+
             df['anomaly'] = np.where(
-                (df['Tab_Value_mDepthC1'].notna()) & 
-                ((df['Tab_Value_mDepthC1'] < lower_bound) | (df['Tab_Value_mDepthC1'] > upper_bound)), 
+                (df['Tab_Value_mDepthC1'].notna()) &
+                ((df['Tab_Value_mDepthC1'] < lower_bound) | (df['Tab_Value_mDepthC1'] > upper_bound)),
                 -1, 0
             )
-            
+
             anomaly_count = sum(df['anomaly'] == -1)
             if anomaly_count > 0:
-                logger.info(f"[ANOMALY] Detected {anomaly_count} anomalies")
+                logger.info(f"[IQR] Detected {anomaly_count} anomalies")
+        else:
+            df['anomaly'] = 0
     except Exception as e:
         logger.error(f"Error detecting anomalies: {e}")
         df['anomaly'] = 0
-        
+
     return df
 
-def load_data_from_db_optimized(start_date=None, end_date=None, station=None, 
+def clean_baseline_columns(df):
+    """
+    Remove internal baseline processing columns before sending to frontend.
+    Keep only essential columns for frontend display.
+    """
+    # Columns added by Southern Baseline Rules that should be removed
+    baseline_columns = [
+        'Expected_Value', 'Baseline', 'Baseline_Sources', 'Baseline_Stations',
+        'Deviation', 'Is_Outlier', 'Tolerance', 'Excluded_From_Baseline'
+    ]
+
+    # Remove these columns if they exist
+    cols_to_drop = [col for col in baseline_columns if col in df.columns]
+    if cols_to_drop:
+        logger.info(f"[CLEANUP] Removing {len(cols_to_drop)} baseline columns: {cols_to_drop}")
+        df = df.drop(columns=cols_to_drop)
+
+    return df
+
+def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                                 data_source='default', show_anomalies=False):
     """Optimized data loading with smart aggregation and FIXED date filtering"""
     if not DATABASE_AVAILABLE or not engine:
@@ -341,7 +407,8 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                 df.columns = result.keys()
                 df = clean_numeric_data(df)
                 
-                if agg_level == 'raw' and show_anomalies:
+                # Apply Southern Baseline Rules to all data when anomalies requested
+                if show_anomalies:
                     df = detect_anomalies(df)
                 else:
                     df['anomaly'] = 0
@@ -556,7 +623,8 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                 df.columns = result.keys()
                 df = clean_numeric_data(df)
 
-                if agg_level == 'raw' and show_anomalies:
+                # Apply Southern Baseline Rules to all data when anomalies requested
+                if show_anomalies:
                     df = detect_anomalies(df)
                 else:
                     df['anomaly'] = 0
@@ -615,6 +683,9 @@ def lambda_handler_batch(event, context):
 
         if 'aggregation_level' in df.columns:
             df = df.drop(columns=['aggregation_level'])
+
+        # Clean up baseline processing columns (keep only anomaly field)
+        df = clean_baseline_columns(df)
 
         df_json = df.copy()
 
@@ -699,6 +770,9 @@ def lambda_handler(event, context):
 
         if 'aggregation_level' in df.columns:
             df = df.drop(columns=['aggregation_level'])
+
+        # Clean up baseline processing columns (keep only anomaly field)
+        df = clean_baseline_columns(df)
 
         df_json = df.copy()
 

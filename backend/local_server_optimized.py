@@ -507,12 +507,13 @@ async def get_data_batch(
     start_date: Optional[str] = Query(None, description="Start date (ISO format)"),
     end_date: Optional[str] = Query(None, description="End date (ISO format)"),
     data_source: str = Query("default", description="Data source"),
-    show_anomalies: bool = Query(False, description="Show anomalies")
+    show_anomalies: bool = Query(False, description="Show anomalies"),
+    include_outliers: bool = Query(False, description="Include outliers (alias for show_anomalies)")
 ):
     """Batch endpoint to fetch data for multiple stations in a single query"""
 
     # Create deduplication key
-    dedup_key = f"data_batch:{stations}:{start_date}:{end_date}:{data_source}:{show_anomalies}"
+    dedup_key = f"data_batch:{stations}:{start_date}:{end_date}:{data_source}:{show_anomalies}:{include_outliers}"
 
     async def fetch_batch_data():
         try:
@@ -530,7 +531,8 @@ async def get_data_batch(
                     "start_date": start_date,
                     "end_date": end_date,
                     "data_source": data_source,
-                    "show_anomalies": str(show_anomalies).lower()
+                    "show_anomalies": str(show_anomalies).lower(),
+                    "include_outliers": str(include_outliers).lower()
                 }
             }
             response = lambda_handler_batch(event, None)
@@ -792,17 +794,17 @@ async def get_mariners_forecast():
     try:
         import xml.etree.ElementTree as ET
         import requests
-        
+
         logger.info("Fetching mariners forecast from IMS...")
         url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/medit_sea.xml"
         response = requests.get(url, timeout=10)
-        
+
         if response.status_code != 200:
             logger.error(f"IMS returned status {response.status_code}")
             raise HTTPException(status_code=500, detail=f"IMS API returned {response.status_code}")
-        
+
         logger.info(f"IMS response length: {len(response.content)} bytes")
-        
+
         # ✅ FIXED: Proper Hebrew encoding detection
         content = None
         encodings_to_try = [
@@ -832,19 +834,19 @@ async def get_mariners_forecast():
             # Last resort: UTF-8 with error replacement
             content = response.content.decode('utf-8', errors='replace')
             logger.warning("⚠️ Using UTF-8 with error replacement")
-        
+
         if not content:
             raise HTTPException(status_code=500, detail="Failed to decode XML content")
-        
+
         root = ET.fromstring(content)
-        
+
         # Parse metadata
         metadata = {
             'organization': root.find('.//Organization').text if root.find('.//Organization') is not None else '',
             'title': root.find('.//Title').text if root.find('.//Title') is not None else '',
             'issue_datetime': root.find('.//IssueDateTime').text if root.find('.//IssueDateTime') is not None else ''
         }
-        
+
         # Parse locations
         locations = []
         for location in root.findall('.//Location'):
@@ -855,7 +857,7 @@ async def get_mariners_forecast():
                 'name_heb': location_meta.find('LocationNameHeb').text if location_meta.find('LocationNameHeb') is not None else '',
                 'forecasts': []
             }
-            
+
             location_forecast_data = location.find('LocationData')
             if location_forecast_data is not None:
                 for time_unit in location_forecast_data.findall('TimeUnitData'):
@@ -864,16 +866,16 @@ async def get_mariners_forecast():
                         'to': time_unit.find('DateTimeTo').text if time_unit.find('DateTimeTo') is not None else '',
                         'elements': {}
                     }
-                    
+
                     for element in time_unit.findall('Element'):
                         element_name = element.find('ElementName').text if element.find('ElementName') is not None else ''
                         element_value = element.find('ElementValue').text if element.find('ElementValue') is not None else ''
                         forecast['elements'][element_name] = element_value
-                    
+
                     location_data['forecasts'].append(forecast)
-            
+
             locations.append(location_data)
-        
+
         logger.info(f"Successfully parsed {len(locations)} locations with metadata: {metadata}")
         for loc in locations:
             logger.info(f"Location: {loc['name_eng']} ({loc['name_heb']}) - {len(loc['forecasts'])} forecasts")
@@ -881,10 +883,37 @@ async def get_mariners_forecast():
             'metadata': metadata,
             'locations': locations
         }
-        
+
     except Exception as e:
         logger.error(f"Error in mariners forecast: {e}")
         raise HTTPException(status_code=500, detail=f"Error fetching mariners forecast: {str(e)}")
+
+@app.options("/api/mariners-forecast")
+async def mariners_forecast_options():
+    """Handle CORS preflight for mariners forecast"""
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type"
+        }
+    )
+
+@app.head("/api/mariners-forecast")
+async def mariners_forecast_head():
+    """Handle HEAD requests for mariners forecast"""
+    return JSONResponse(content={}, headers={"Content-Type": "application/json"})
+
+@app.get("/api/mariners-mapframe")
+async def mariners_mapframe():
+    """Serve the mariners forecast map iframe"""
+    mapframe_path = backend_root / "mariners_mapframe.html"
+    logger.info(f"Looking for mariners mapframe at: {mapframe_path}")
+    if mapframe_path.exists():
+        return FileResponse(str(mapframe_path), media_type="text/html")
+    logger.error(f"Mariners mapframe not found at {mapframe_path}")
+    raise HTTPException(status_code=404, detail="Mariners mapframe not found")
 
 @app.get("/api/stations/map")
 async def get_api_stations_map(end_date: Optional[str] = None):
