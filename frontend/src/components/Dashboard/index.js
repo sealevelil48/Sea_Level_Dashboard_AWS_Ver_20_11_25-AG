@@ -131,16 +131,55 @@ function Dashboard() {
   // Fetch forecast data on mount
   useEffect(() => {
     const fetchForecast = async () => {
+      // Create AbortController with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
       try {
-        const response = await fetch(`${API_BASE_URL}/api/sea-forecast`);
+        const response = await fetch(`${API_BASE_URL}/api/sea-forecast`, {
+          signal: controller.signal
+        });
+
+        // Clear timeout on successful response
+        clearTimeout(timeoutId);
+
         if (response.ok) {
+          // Validate content-type
+          const contentType = response.headers.get('content-type');
+          if (!contentType || !contentType.includes('application/json')) {
+            console.error('Invalid content-type for forecast:', contentType);
+            return;
+          }
+
           const data = await response.json();
+
+          // Validate response data structure
+          if (!data || typeof data !== 'object') {
+            console.error('Invalid forecast data structure:', data);
+            return;
+          }
+
+          // Only update state if component is still mounted
           if (isMounted.current) {
             setForecastData(data);
           }
+        } else {
+          console.error(`Forecast fetch failed with status: ${response.status}`);
         }
       } catch (err) {
-        console.error('Forecast fetch error:', err);
+        // Clear timeout on error
+        clearTimeout(timeoutId);
+
+        if (err.name === 'AbortError') {
+          console.error('Forecast fetch timeout after 30 seconds');
+        } else {
+          console.error('Forecast fetch error:', err);
+        }
+
+        // Set error state if component is still mounted
+        if (isMounted.current) {
+          setForecastData(null);
+        }
       }
     };
 
@@ -168,19 +207,53 @@ function Dashboard() {
 
   // Delta calculation when 2 points selected
   useEffect(() => {
-    if (selectedPoints.length === 2) {
+    try {
+      // Validate selectedPoints array exists and has exactly 2 points
+      if (!selectedPoints || !Array.isArray(selectedPoints) || selectedPoints.length !== 2) {
+        setDeltaResult(null);
+        return;
+      }
+
+      // Validate first point
+      const pt1 = selectedPoints[0];
+      if (!pt1 ||
+          typeof pt1.y !== 'number' ||
+          isNaN(pt1.y) ||
+          !pt1.timestamp ||
+          !pt1.station) {
+        console.warn('Invalid first selected point:', pt1);
+        setDeltaResult(null);
+        return;
+      }
+
+      // Validate second point
+      const pt2 = selectedPoints[1];
+      if (!pt2 ||
+          typeof pt2.y !== 'number' ||
+          isNaN(pt2.y) ||
+          !pt2.timestamp ||
+          !pt2.station) {
+        console.warn('Invalid second selected point:', pt2);
+        setDeltaResult(null);
+        return;
+      }
+
       const point1 = {
-        Tab_Value_mDepthC1: selectedPoints[0].y,
-        Tab_DateTime: selectedPoints[0].timestamp,
-        Station: selectedPoints[0].station
+        Tab_Value_mDepthC1: pt1.y,
+        Tab_DateTime: pt1.timestamp,
+        Station: pt1.station
       };
       const point2 = {
-        Tab_Value_mDepthC1: selectedPoints[1].y,
-        Tab_DateTime: selectedPoints[1].timestamp,
-        Station: selectedPoints[1].station
+        Tab_Value_mDepthC1: pt2.y,
+        Tab_DateTime: pt2.timestamp,
+        Station: pt2.station
       };
-      setDeltaResult(calculateDelta(point1, point2));
-    } else {
+
+      // Calculate delta with try-catch
+      const delta = calculateDelta(point1, point2);
+      setDeltaResult(delta);
+    } catch (error) {
+      console.error('Error calculating delta:', error);
       setDeltaResult(null);
     }
   }, [selectedPoints]);
@@ -421,6 +494,10 @@ function Dashboard() {
       return;
     }
 
+    // Create AbortController with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
+
     try {
       const modelParam = filters.predictionModels.join(',');
       const stationParam = stationsToPredict.join(',');
@@ -437,9 +514,15 @@ function Dashboard() {
         steps: filters.forecastHours
       });
 
-      const response = await fetch(`${API_BASE_URL}/api/predictions?${params}`);
+      const response = await fetch(`${API_BASE_URL}/api/predictions?${params}`, {
+        signal: controller.signal
+      });
+
+      // Clear timeout on successful response
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
+        // Validate content-type
         const contentType = response.headers.get('content-type');
         if (contentType && contentType.includes('text/html')) {
           throw new Error('Received HTML instead of JSON. Check if backend route is /api/predictions');
@@ -447,12 +530,47 @@ function Dashboard() {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
+      // Validate content-type
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.error('Invalid content-type for predictions:', contentType);
+        if (isMounted.current) {
+          setPredictions({});
+        }
+        return;
+      }
+
       const data = await response.json();
+
+      // Validate response data structure
+      if (!data || typeof data !== 'object') {
+        console.error('Invalid predictions data structure:', data);
+        if (isMounted.current) {
+          setPredictions({});
+        }
+        return;
+      }
+
       console.log('Predictions received successfully:', Object.keys(data));
-      setPredictions(data);
+
+      // Only update state if component is still mounted
+      if (isMounted.current) {
+        setPredictions(data);
+      }
     } catch (error) {
-      console.error('Error fetching predictions:', error);
-      setPredictions({});
+      // Clear timeout on error
+      clearTimeout(timeoutId);
+
+      if (error.name === 'AbortError') {
+        console.error('Predictions fetch timeout after 15 seconds');
+      } else {
+        console.error('Error fetching predictions:', error);
+      }
+
+      // Set error state if component is still mounted
+      if (isMounted.current) {
+        setPredictions({});
+      }
     }
   }, [filters.predictionModels, filters.forecastHours]);
 

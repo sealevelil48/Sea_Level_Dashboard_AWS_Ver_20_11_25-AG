@@ -338,36 +338,68 @@ async def health_check():
         "python_version": sys.version,
         "server_status": "online"
     }
-    
-    # Check database
+
+    # Check database with comprehensive null checks and timeout
     try:
-        if db_manager and db_manager.health_check():
-            health_status["database"] = "connected"
-            # Add performance metrics if available
-            if hasattr(db_manager, 'get_metrics'):
-                metrics = db_manager.get_metrics()
-                health_status["metrics"] = metrics
-                
-                # Add Redis cache status
-                if db_manager._redis_client:
-                    try:
-                        redis_info = db_manager._redis_client.info('stats')
-                        health_status["cache"] = {
-                            "status": "connected",
-                            "hits": redis_info.get('keyspace_hits', 0),
-                            "misses": redis_info.get('keyspace_misses', 0),
-                            "hit_rate": metrics.get('cache_hit_rate', '0%'),
-                            "keys": db_manager._redis_client.dbsize()
-                        }
-                    except:
-                        health_status["cache"] = {"status": "error"}
-                else:
-                    health_status["cache"] = {"status": "disabled"}
+        # Check if db_manager exists
+        if db_manager is None:
+            health_status["database"] = "not_configured"
+            health_status["status"] = "degraded"
+        # Check if health_check method exists
+        elif not hasattr(db_manager, 'health_check'):
+            health_status["database"] = "health_check_not_available"
+            health_status["status"] = "degraded"
         else:
-            health_status["database"] = "disconnected"
+            # Call health_check with timeout protection
+            import asyncio
+            try:
+                # Use asyncio.wait_for to add timeout (5 seconds)
+                health_check_result = await asyncio.wait_for(
+                    asyncio.to_thread(db_manager.health_check),
+                    timeout=5.0
+                )
+
+                if health_check_result:
+                    health_status["database"] = "connected"
+                    # Add performance metrics if available
+                    if hasattr(db_manager, 'get_metrics'):
+                        try:
+                            metrics = db_manager.get_metrics()
+                            health_status["metrics"] = metrics
+
+                            # Add Redis cache status with proper null checks
+                            if hasattr(db_manager, '_redis_client') and db_manager._redis_client:
+                                try:
+                                    redis_info = db_manager._redis_client.info('stats')
+                                    health_status["cache"] = {
+                                        "status": "connected",
+                                        "hits": redis_info.get('keyspace_hits', 0),
+                                        "misses": redis_info.get('keyspace_misses', 0),
+                                        "hit_rate": metrics.get('cache_hit_rate', '0%'),
+                                        "keys": db_manager._redis_client.dbsize()
+                                    }
+                                except Exception as redis_error:
+                                    health_status["cache"] = {"status": "error", "message": str(redis_error)}
+                            else:
+                                health_status["cache"] = {"status": "disabled"}
+                        except Exception as metrics_error:
+                            logger.warning(f"Failed to get metrics: {metrics_error}")
+                else:
+                    health_status["database"] = "disconnected"
+                    health_status["status"] = "degraded"
+            except asyncio.TimeoutError:
+                health_status["database"] = "timeout"
+                health_status["status"] = "degraded"
+                logger.error("Database health check timed out after 5 seconds")
+            except Exception as health_error:
+                health_status["database"] = f"error: {str(health_error)}"
+                health_status["status"] = "degraded"
+                logger.error(f"Database health check error: {health_error}")
     except Exception as e:
-        health_status["database"] = f"disconnected ({e})"
-    
+        health_status["database"] = f"check_failed: {str(e)}"
+        health_status["status"] = "degraded"
+        logger.error(f"Health check exception: {e}")
+
     return health_status
 
 @app.get("/api/stations")
@@ -944,7 +976,7 @@ async def get_outliers(
             result['outliers_detected'] = len(filtered_outliers)
             result['outlier_percentage'] = round(len(filtered_outliers) / result['total_records'] * 100, 2) if result['total_records'] > 0 else 0
             # Sanitize station names for logging to prevent log injection
-            safe_stations = [station.replace('\n', '').replace('\r', '')[:50] for station in requested_stations]
+            safe_stations = [''.join(c for c in station if c.isprintable() and c not in ['\n', '\r', '\t'])[:50] for station in requested_stations]
             logger.info(f"Filtered {len(result.get('outliers', []))} total outliers to {len(filtered_outliers)} for station(s) {safe_stations}")
         else:
             logger.info(f"Returning all {result['outliers_detected']} outliers for all stations")
@@ -1162,7 +1194,7 @@ async def get_corrections(
                 'timestamp': result.get('timestamp')
             }
             # Sanitize station name for logging to prevent log injection
-            safe_station = station.replace('\n', '').replace('\r', '')[:50] if station else 'Unknown'
+            safe_station = ''.join(c for c in station if c.isprintable() and c not in ['\n', '\r', '\t'])[:50] if station else 'Unknown'
             logger.info(f"Filtered {len(filtered)} suggestions for station {safe_station}")
 
         return JSONResponse(content=result, status_code=200)

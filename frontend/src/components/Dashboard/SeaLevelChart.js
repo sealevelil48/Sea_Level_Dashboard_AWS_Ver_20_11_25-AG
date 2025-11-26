@@ -93,56 +93,106 @@ const SeaLevelChart = React.forwardRef(({
       intersect: false,
     },
     onClick: (event, elements, chart) => {
-      // Prevent event propagation and default behavior
-      if (event && event.native) {
-        event.native.preventDefault();
-        event.native.stopPropagation();
-      }
+      try {
+        // Prevent event propagation and default behavior
+        if (event && event.native) {
+          event.native.preventDefault();
+          event.native.stopPropagation();
+        }
 
-      if (onPointClick && elements.length > 0) {
+        if (!onPointClick || !elements || elements.length === 0) {
+          return;
+        }
+
         // FIX: When multiple datasets exist at the same x-coordinate,
         // Chart.js returns all of them. We need to find the CLOSEST one
         // to the actual mouse cursor position (y-axis distance matters!)
         let closestElement = elements[0];
 
         if (elements.length > 1) {
-          // Get the click position in pixels
-          const rect = chart.canvas.getBoundingClientRect();
-          const mouseX = event.native.clientX - rect.left;
-          const mouseY = event.native.clientY - rect.top;
-
-          // Find the element with minimum distance to mouse cursor
-          let minDistance = Infinity;
-
-          elements.forEach(element => {
-            // Get the element's pixel position on canvas
-            const meta = chart.getDatasetMeta(element.datasetIndex);
-            const elementPosition = meta.data[element.index];
-
-            if (elementPosition) {
-              const elementX = elementPosition.x;
-              const elementY = elementPosition.y;
-
-              // Calculate Euclidean distance from mouse to element
-              const distance = Math.sqrt(
-                Math.pow(mouseX - elementX, 2) +
-                Math.pow(mouseY - elementY, 2)
-              );
-
-              // Update closest element if this one is closer
-              if (distance < minDistance) {
-                minDistance = distance;
-                closestElement = element;
-              }
+          try {
+            // Get the click position in pixels with validation
+            const rect = chart.canvas.getBoundingClientRect();
+            if (!event.native || typeof event.native.clientX !== 'number' || typeof event.native.clientY !== 'number') {
+              console.warn('Invalid mouse coordinates');
+              return;
             }
-          });
+
+            const mouseX = event.native.clientX - rect.left;
+            const mouseY = event.native.clientY - rect.top;
+
+            // Find the element with minimum distance to mouse cursor
+            let minDistance = Infinity;
+
+            elements.forEach(element => {
+              try {
+                // Get the element's pixel position on canvas with comprehensive null checks
+                const meta = chart.getDatasetMeta(element.datasetIndex);
+                if (!meta || !meta.data || !Array.isArray(meta.data)) {
+                  return; // Skip this element
+                }
+
+                const elementPosition = meta.data[element.index];
+
+                // Validate elementPosition and its coordinates
+                if (elementPosition &&
+                    typeof elementPosition.x === 'number' &&
+                    typeof elementPosition.y === 'number' &&
+                    !isNaN(elementPosition.x) &&
+                    !isNaN(elementPosition.y)) {
+                  const elementX = elementPosition.x;
+                  const elementY = elementPosition.y;
+
+                  // Calculate Euclidean distance from mouse to element
+                  const distance = Math.sqrt(
+                    Math.pow(mouseX - elementX, 2) +
+                    Math.pow(mouseY - elementY, 2)
+                  );
+
+                  // Update closest element if this one is closer
+                  if (distance < minDistance) {
+                    minDistance = distance;
+                    closestElement = element;
+                  }
+                }
+              } catch (elementError) {
+                console.warn('Error processing element:', elementError);
+              }
+            });
+          } catch (distanceError) {
+            console.warn('Error calculating distances:', distanceError);
+          }
+        }
+
+        // Validate closestElement before accessing
+        if (!closestElement ||
+            typeof closestElement.datasetIndex !== 'number' ||
+            typeof closestElement.index !== 'number') {
+          return;
         }
 
         // Use the closest element instead of always using elements[0]
         const datasetIndex = closestElement.datasetIndex;
         const dataIndex = closestElement.index;
+
+        // Validate dataset exists
+        if (!chart.data || !chart.data.datasets || !chart.data.datasets[datasetIndex]) {
+          return;
+        }
+
         const dataset = chart.data.datasets[datasetIndex];
+
+        // Validate point exists
+        if (!dataset.data || !dataset.data[dataIndex]) {
+          return;
+        }
+
         const point = dataset.data[dataIndex];
+
+        // Validate point data
+        if (!point || typeof point.x === 'undefined' || typeof point.y === 'undefined') {
+          return;
+        }
 
         // Only allow clicking on station data (not predictions, anomalies, trendlines, etc.)
         const label = dataset.label || '';
@@ -168,6 +218,8 @@ const SeaLevelChart = React.forwardRef(({
             fullData: dataset
           });
         }
+      } catch (error) {
+        console.error('Error in chart click handler:', error);
       }
     },
     plugins: {

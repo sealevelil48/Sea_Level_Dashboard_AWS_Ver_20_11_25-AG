@@ -168,22 +168,60 @@ export const useChartJsConfig = ({
       return stationColors[station] || '#00bfff';
     };
 
-    // Group data by station
+    // Group data by station with comprehensive validation
     const stationData = {};
     graphData.forEach(point => {
-      const station = point.Station;
-      // Validate data before adding
-      if (point.Tab_Value_mDepthC1 !== null &&
-          point.Tab_Value_mDepthC1 !== undefined &&
-          !isNaN(point.Tab_Value_mDepthC1) &&
-          point.Tab_DateTime) {
+      try {
+        // Validate point exists
+        if (!point) {
+          return;
+        }
+
+        // Validate station name
+        const station = point.Station;
+        if (!station || typeof station !== 'string' || station.trim() === '') {
+          return;
+        }
+
+        // Validate value is a valid number
+        const value = point.Tab_Value_mDepthC1;
+        if (value === null ||
+            value === undefined ||
+            typeof value !== 'number' ||
+            isNaN(value)) {
+          return;
+        }
+
+        // Validate timestamp exists
+        const timestamp = point.Tab_DateTime;
+        if (!timestamp) {
+          return;
+        }
+
+        // Try to parse date with error handling
+        let dateObj;
+        try {
+          dateObj = new Date(timestamp);
+          // Check if date is valid
+          if (isNaN(dateObj.getTime())) {
+            console.warn('Invalid date:', timestamp);
+            return;
+          }
+        } catch (dateError) {
+          console.warn('Error parsing date:', timestamp, dateError);
+          return;
+        }
+
+        // Add to station data
         if (!stationData[station]) {
           stationData[station] = [];
         }
         stationData[station].push({
-          x: new Date(point.Tab_DateTime),
-          y: Number(point.Tab_Value_mDepthC1)
+          x: dateObj,
+          y: Number(value)
         });
+      } catch (error) {
+        console.warn('Error processing data point:', error);
       }
     });
 
