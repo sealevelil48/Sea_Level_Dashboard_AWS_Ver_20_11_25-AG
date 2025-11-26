@@ -1,8 +1,10 @@
-# Sea Level Monitoring System
+# Sea Level Dashboard
 
 [![CI](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version/actions/workflows/ci.yml/badge.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version)
 
-A comprehensive real-time sea level monitoring and analysis system with predictive capabilities, anomaly detection, and interactive data visualization for Israeli coastal stations.
+A comprehensive real-time sea level monitoring and prediction system for Israeli coastal stations, featuring advanced anomaly detection using Southern Baseline Rules, predictive analytics with multiple ML models, and interactive visualizations.
 
 ## 🎯 Overview
 
