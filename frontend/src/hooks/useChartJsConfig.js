@@ -156,7 +156,7 @@ export const useChartJsConfig = ({
       'Acre': '#00bfff',      // Cyan/Sky Blue
       'Ashdod': '#ff7f0e',    // Orange
       'Ashkelon': '#8c564b',  // Brown
-      'Eilat': '#e377c2',     // Pink/Magenta
+      'Eilat': '#ff0000',     // Red
       'Haifa': '#9467bd',     // Purple
       'Yafo': '#2ca02c',      // Green
       'Tel-Aviv': '#d62728',  // Red (fallback)
