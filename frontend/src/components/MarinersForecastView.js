@@ -143,43 +143,46 @@ const MarinersForecastView = ({ apiBaseUrl, isFullscreen = false }) => {
   }
 
   return (
-    <div>
-      {/* Header */}
-      <Card className="mb-3">
-        <Card.Body>
-          <Row>
-            <Col>
-              <h5 className="mb-1" style={{ fontSize: isMobile ? '1rem' : '1.25rem' }}>
-                {forecastData.metadata?.title}
-              </h5>
-              <small style={{ 
-                color: '#FFFFFF',
-                fontSize: isMobile ? '0.75rem' : '0.875rem' 
-              }}>
-                {forecastData.metadata?.organization} | 
-                Issued: {formatDateTime(forecastData.metadata?.issue_datetime)}
-              </small>
-            </Col>
-            <Col xs="auto">
-              <Button 
-                variant="outline-primary" 
-                size="sm" 
-                onClick={fetchForecastData}
-                disabled={loading}
-              >
-                {loading ? <Spinner size="sm" /> : '🔄'} Refresh
-              </Button>
-            </Col>
-          </Row>
-        </Card.Body>
-      </Card>
+    <div style={{ width: '100%', height: isFullscreen ? '100%' : 'auto' }}>
+      {/* Header - hidden in fullscreen */}
+      {!isFullscreen && (
+        <Card className="mb-3">
+          <Card.Body>
+            <Row>
+              <Col>
+                <h5 className="mb-1" style={{ fontSize: isMobile ? '1rem' : '1.25rem' }}>
+                  {forecastData.metadata?.title}
+                </h5>
+                <small style={{
+                  color: '#FFFFFF',
+                  fontSize: isMobile ? '0.75rem' : '0.875rem'
+                }}>
+                  {forecastData.metadata?.organization} |
+                  Issued: {formatDateTime(forecastData.metadata?.issue_datetime)}
+                </small>
+              </Col>
+              <Col xs="auto">
+                <Button
+                  variant="outline-primary"
+                  size="sm"
+                  onClick={fetchForecastData}
+                  disabled={loading}
+                >
+                  {loading ? <Spinner size="sm" /> : '🔄'} Refresh
+                </Button>
+              </Col>
+            </Row>
+          </Card.Body>
+        </Card>
+      )}
 
-      {/* Tabs */}
-      <Tabs 
-        activeKey={activeTab} 
-        onSelect={(k) => setActiveTab(k)} 
-        className="mb-3"
-      >
+      {/* Tabs - hidden in fullscreen, show active content only */}
+      {!isFullscreen && (
+        <Tabs
+          activeKey={activeTab}
+          onSelect={(k) => setActiveTab(k)}
+          className="mb-3"
+        >
         <Tab eventKey="table" title="Table View">
           {activeTab === 'table' && (
             <div style={{ 
@@ -296,9 +299,122 @@ const MarinersForecastView = ({ apiBaseUrl, isFullscreen = false }) => {
           </div>
         </Tab>
       </Tabs>
+      )}
 
-      {/* IMS Copyright */}
-      <div className="text-center mt-3">
+      {/* Fullscreen: Show only active tab content without tabs */}
+      {isFullscreen && activeTab === 'table' && (
+        <div style={{
+          width: '100%',
+          height: '100%',
+          overflowX: 'auto',
+          overflowY: 'auto'
+        }}>
+          <Table
+            striped
+            bordered
+            hover
+            variant="dark"
+            size="sm"
+            style={{
+              fontSize: isMobile ? '0.75rem' : '0.875rem',
+              minWidth: '800px'
+            }}
+          >
+            <thead>
+              <tr>
+                <th>Valid Time</th>
+                <th>Location</th>
+                <th>Wind</th>
+                <th>Wave Height</th>
+                <th>Pressure</th>
+                <th>Visibility</th>
+                <th>Weather</th>
+                <th>Swell</th>
+              </tr>
+            </thead>
+            <tbody>
+              {forecastData.locations.map((location) =>
+                location.forecasts.map((forecast, idx) => (
+                  <tr key={`${location.id}-${idx}`}>
+                    <td>
+                      <small>
+                        {formatDateTime(forecast.from)} - {formatDateTime(forecast.to)}
+                      </small>
+                    </td>
+                    <td>
+                      <strong>{location.name_eng}</strong>
+                      <br />
+                      <small>{location.name_heb}</small>
+                    </td>
+                    <td>
+                      {forecast.elements['Wind direction and speed'] ?
+                        parseWindInfo(forecast.elements['Wind direction and speed']) :
+                        'N/A'
+                      }
+                    </td>
+                    <td>
+                      {forecast.elements['Sea status and waves height'] ?
+                        parseWaveHeight(forecast.elements['Sea status and waves height']) :
+                        'N/A'
+                      }
+                    </td>
+                    <td>
+                      {forecast.elements['Pressure'] ?
+                        formatPressure(forecast.elements['Pressure']) :
+                        'N/A'
+                      }
+                    </td>
+                    <td>
+                      {forecast.elements['Visibility'] ?
+                        formatVisibility(forecast.elements['Visibility']) :
+                        'N/A'
+                      }
+                    </td>
+                    <td>
+                      {forecast.elements['Weather code'] ?
+                        translateWeatherCode(forecast.elements['Weather code']) :
+                        'N/A'
+                      }
+                    </td>
+                    <td>
+                      {forecast.elements['Swell'] ?
+                        parseSwellInfo(forecast.elements['Swell']) :
+                        'N/A'
+                      }
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </Table>
+        </div>
+      )}
+
+      {isFullscreen && activeTab === 'map' && (
+        <div style={{
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden'
+        }}>
+          {!iframeCreated && (() => {
+            setIframeCreated(true);
+            return null;
+          })()}
+          {iframeCreated && (
+            <iframe
+              src={`${stableApiUrl}/api/mariners-mapframe`}
+              style={{ width: '100%', height: '100%', border: 'none' }}
+              title="Mariners Forecast Map"
+              allow="geolocation; accelerometer; clipboard-write"
+              sandbox="allow-scripts allow-same-origin allow-forms"
+            />
+          )}
+        </div>
+      )}
+
+      {/* IMS Copyright - hidden in fullscreen */}
+      {!isFullscreen && (
+        <div className="text-center mt-3">
         <small className="text-muted">
           <a 
             href="https://ims.gov.il/he/marine" 
@@ -309,7 +425,8 @@ const MarinersForecastView = ({ apiBaseUrl, isFullscreen = false }) => {
             IMS Mariners Forecast ©
           </a>
         </small>
-      </div>
+        </div>
+      )}
     </div>
   );
 };

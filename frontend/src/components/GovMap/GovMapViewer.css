@@ -1,0 +1,559 @@
+/**
+ * GovMapViewer Component Styles
+ * Responsive styles for GovMap integration with mobile optimizations
+ */
+
+/* ============================================================================
+   WRAPPER & CONTAINER
+   ============================================================================ */
+
+.govmap-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  background: #f0f0f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.govmap-container {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+}
+
+/* Fullscreen mode - just fill parent container (DashboardMap handles fullscreen) */
+.govmap-fullscreen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  border-radius: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.govmap-fullscreen .govmap-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* ============================================================================
+   LOADING STATE
+   ============================================================================ */
+
+.govmap-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff;
+}
+
+.govmap-loading-content {
+  text-align: center;
+  padding: 20px;
+}
+
+.govmap-loading-spinner {
+  width: 50px;
+  height: 50px;
+  margin: 0 auto 20px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: govmap-spin 1s linear infinite;
+}
+
+@keyframes govmap-spin {
+  to { transform: rotate(360deg); }
+}
+
+.govmap-loading-text {
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+}
+
+.govmap-loading-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  z-index: 1000;
+}
+
+.govmap-loading-overlay .govmap-loading-content {
+  text-align: center;
+  padding: 20px;
+  color: #fff;
+}
+
+.govmap-loading-overlay .govmap-loading-spinner {
+  width: 50px;
+  height: 50px;
+  margin: 0 auto 20px;
+  border: 4px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: govmap-spin 1s linear infinite;
+}
+
+.govmap-loading-overlay .govmap-loading-text {
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  color: #fff;
+}
+
+/* ============================================================================
+   ERROR STATE
+   ============================================================================ */
+
+.govmap-error {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+  color: #fff;
+  text-align: center;
+}
+
+.govmap-error-content {
+  padding: 40px 20px;
+  max-width: 500px;
+}
+
+.govmap-error-icon {
+  font-size: 64px;
+  margin-bottom: 20px;
+}
+
+.govmap-error h3 {
+  margin: 0 0 15px 0;
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.govmap-error p {
+  margin: 0 0 25px 0;
+  font-size: 16px;
+  line-height: 1.5;
+  opacity: 0.95;
+}
+
+.govmap-error-button,
+.govmap-retry-button {
+  padding: 12px 30px;
+  background: rgba(255, 255, 255, 0.2);
+  border: 2px solid rgba(255, 255, 255, 0.8);
+  border-radius: 25px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.govmap-error-button:hover,
+.govmap-retry-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+  border-color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.govmap-error-button:active,
+.govmap-retry-button:active {
+  transform: translateY(0);
+}
+
+/* ============================================================================
+   NO DATA STATE
+   ============================================================================ */
+
+.govmap-no-data {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  padding: 20px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+}
+
+.govmap-no-data p {
+  margin: 0 0 15px 0;
+  color: #333;
+  font-size: 16px;
+}
+
+/* ============================================================================
+   GOVMAP POPUP CUSTOMIZATION
+   ============================================================================ */
+
+/* Global bubble styles */
+.govmap-bubble {
+  font-family: Arial, sans-serif !important;
+  padding: 15px !important;
+  min-width: 250px !important;
+  direction: ltr !important;
+  text-align: left !important;
+  background: #fff !important;
+  border-radius: 8px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15) !important;
+}
+
+.govmap-bubble h4 {
+  margin: 0 0 15px 0 !important;
+  color: #2c3e50 !important;
+  border-bottom: 2px solid #3498db !important;
+  padding-bottom: 5px !important;
+  font-size: 18px !important;
+}
+
+.govmap-bubble div {
+  margin: 8px 0 !important;
+  line-height: 1.5 !important;
+}
+
+.govmap-bubble strong {
+  color: #2c3e50 !important;
+  font-weight: 600 !important;
+}
+
+.govmap-bubble a {
+  color: #666 !important;
+  text-decoration: none !important;
+  transition: color 0.2s ease !important;
+}
+
+.govmap-bubble a:hover {
+  color: #3498db !important;
+}
+
+/* ============================================================================
+   MOBILE FULLSCREEN FIX - iPhone Portrait
+   Critical: Ensure fullscreen container is properly centered
+   Parent (DashboardMap) handles position:fixed, we just fill it
+   ============================================================================ */
+
+@media screen and (max-width: 768px) and (orientation: portrait) {
+  /* Fill parent container - DashboardMap already has position:fixed */
+  .govmap-fullscreen {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    transform: none !important;
+  }
+
+  .govmap-fullscreen .govmap-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+  }
+
+  /* Ensure GovMap's internal elements don't offset */
+  .govmap-fullscreen #govmap-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+  }
+}
+
+/* ============================================================================
+   MOBILE PORTRAIT POSITIONING
+   Critical: Only applies to portrait orientation
+   ============================================================================ */
+
+@media screen and (max-width: 768px) and (orientation: portrait) {
+  /* Target ONLY GovMap popup/bubble elements - EXCLUDE Leaflet popups */
+  .govmap-bubble:not(.govmap-fullscreen):not(.govmap-wrapper):not(.govmap-container),
+  #govmap-container div[class*="bubble"]:not(.govmap-fullscreen):not(.govmap-wrapper),
+  #govmap-container div[class*="popup"]:not(.govmap-fullscreen):not(.govmap-wrapper),
+  #govmap-container div[class*="tooltip"]:not(.govmap-fullscreen):not(.govmap-wrapper),
+  #govmap-container > iframe + div[style*="position: absolute"] {
+    position: fixed !important;
+    right: 5px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    left: auto !important;
+    bottom: auto !important;
+    max-width: 250px !important;
+    max-height: 80vh !important;
+    z-index: 99999 !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+    border-radius: 8px !important;
+    overflow-y: auto !important;
+  }
+
+  /* Override any GovMap popup positioning - PORTRAIT ONLY - but NOT containers */
+  #govmap-container > div[class*="bubble"],
+  #govmap-container > div[class*="popup"] {
+    position: fixed !important;
+    right: 5px !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    left: auto !important;
+    bottom: auto !important;
+    z-index: 99999 !important;
+  }
+
+  /* Ensure wrapper and container fill parent in NORMAL view (not fullscreen) */
+  .govmap-wrapper:not(.govmap-fullscreen) {
+    position: relative !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 400px !important;
+  }
+
+  .govmap-container:not(.govmap-fullscreen .govmap-container) {
+    position: relative !important;
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 400px !important;
+  }
+
+  /* Mobile class overrides */
+  .govmap-mobile:not(.govmap-fullscreen) {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 400px !important;
+  }
+
+  .govmap-mobile:not(.govmap-fullscreen) .govmap-container {
+    width: 100% !important;
+    height: 100% !important;
+    min-height: 400px !important;
+  }
+}
+
+/* ============================================================================
+   MOBILE LANDSCAPE FULLSCREEN FIX
+   Parent (DashboardMap) handles position:fixed, we just fill it
+   ============================================================================ */
+
+@media screen and (max-width: 992px) and (orientation: landscape) {
+  /* Fill parent container - DashboardMap already has position:fixed */
+  .govmap-fullscreen {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    transform: none !important;
+  }
+
+  .govmap-fullscreen .govmap-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    max-width: 100% !important;
+    max-height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+  }
+
+  /* Ensure GovMap's internal elements don't offset */
+  .govmap-fullscreen #govmap-container {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    transform: none !important;
+  }
+}
+
+/* ============================================================================
+   MOBILE LANDSCAPE POSITIONING
+   Allow GovMap default behavior in landscape
+   ============================================================================ */
+
+@media screen and (max-width: 992px) and (orientation: landscape) {
+  /* Allow GovMap default positioning in landscape */
+  .govmap-bubble,
+  div[class*="bubble"],
+  div[class*="popup"] {
+    position: absolute !important;
+    max-width: 300px !important;
+    max-height: 60vh !important;
+    /* Let GovMap handle positioning naturally */
+  }
+
+  .govmap-mobile {
+    min-height: 350px;
+  }
+
+  .govmap-mobile .govmap-container {
+    min-height: 350px;
+  }
+}
+
+/* ============================================================================
+   TABLET STYLES
+   ============================================================================ */
+
+@media screen and (min-width: 769px) and (max-width: 1024px) {
+  .govmap-bubble {
+    min-width: 280px !important;
+    max-width: 350px !important;
+  }
+}
+
+/* ============================================================================
+   DESKTOP STYLES
+   ============================================================================ */
+
+@media screen and (min-width: 1025px) {
+  .govmap-bubble {
+    min-width: 300px !important;
+    max-width: 400px !important;
+  }
+}
+
+/* ============================================================================
+   HIGH RESOLUTION DISPLAYS
+   ============================================================================ */
+
+@media screen and (min-resolution: 192dpi) {
+  .govmap-bubble {
+    font-size: 14px !important;
+  }
+
+  .govmap-bubble h4 {
+    font-size: 16px !important;
+  }
+}
+
+/* ============================================================================
+   PRINT STYLES
+   ============================================================================ */
+
+@media print {
+  .govmap-wrapper {
+    page-break-inside: avoid;
+  }
+
+  .govmap-loading,
+  .govmap-error,
+  .govmap-error-button,
+  .govmap-retry-button {
+    display: none !important;
+  }
+}
+
+/* ============================================================================
+   ACCESSIBILITY
+   ============================================================================ */
+
+/* Focus styles for keyboard navigation */
+.govmap-error-button:focus,
+.govmap-retry-button:focus {
+  outline: 3px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 2px;
+}
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  .govmap-loading-spinner {
+    animation: none;
+    border-top-color: transparent;
+  }
+
+  .govmap-error-button,
+  .govmap-retry-button {
+    transition: none;
+  }
+}
+
+/* High contrast mode support */
+@media (prefers-contrast: high) {
+  .govmap-bubble {
+    border: 2px solid #000 !important;
+  }
+
+  .govmap-error-button,
+  .govmap-retry-button {
+    border-width: 3px !important;
+  }
+}
+
+/* ============================================================================
+   DARK MODE SUPPORT (Optional)
+   ============================================================================ */
+
+@media (prefers-color-scheme: dark) {
+  .govmap-wrapper {
+    background: #1a1a1a;
+  }
+
+  .govmap-loading {
+    background: linear-gradient(135deg, #434343 0%, #000000 100%);
+  }
+
+  .govmap-error {
+    background: linear-gradient(135deg, #d32f2f 0%, #b71c1c 100%);
+  }
+}
