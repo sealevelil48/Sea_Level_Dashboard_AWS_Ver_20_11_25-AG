@@ -147,18 +147,71 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
           return;
         }
 
+        // Critical: Ensure container has dimensions before initializing map
+        // Mobile Safari requires this for accurate popup positioning
+        const containerRect = mapRef.current.getBoundingClientRect();
+        console.log('OSM Map container dimensions:', containerRect.width, 'x', containerRect.height);
+
         mapInstanceRef.current = LeafletLib.map(mapRef.current, {
           center: [31.5, 34.8],
           zoom: 7,
           zoomControl: true,
-          preferCanvas: true
+          preferCanvas: true,
+          // Fix popup positioning on mobile
+          closePopupOnClick: true,
+          trackResize: true,
+          // Mobile Safari specific fixes
+          tap: true,
+          tapTolerance: 15,
+          // Ensure proper coordinate calculations
+          worldCopyJump: false
         });
-        
+
         LeafletLib.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '© OpenStreetMap contributors',
           maxZoom: 18
         }).addTo(mapInstanceRef.current);
-        
+
+        // Critical fix: Force map size recalculation before popup opens
+        // Mobile Safari specific: ensure container dimensions are stable
+        mapInstanceRef.current.on('popupopen', function(e) {
+          // Aggressively recalculate map size and popup position
+          if (mapInstanceRef.current && e.popup) {
+            // Force immediate size calculation
+            mapInstanceRef.current.invalidateSize({pan: false, animate: false});
+
+            // Update popup position immediately
+            if (e.popup.update) {
+              e.popup.update();
+            }
+
+            // Double-check after DOM settles (mobile Safari needs this)
+            setTimeout(() => {
+              if (mapInstanceRef.current && e.popup) {
+                mapInstanceRef.current.invalidateSize({pan: false, animate: false});
+                if (e.popup.update) {
+                  e.popup.update();
+                }
+
+                // Mobile Safari: Force repaint to fix position calculation
+                const popupNode = e.popup._container;
+                if (popupNode) {
+                  popupNode.style.display = 'none';
+                  popupNode.offsetHeight; // Force reflow
+                  popupNode.style.display = '';
+                }
+              }
+            }, 50);
+          }
+        });
+
+        // Also recalculate on any map move/zoom
+        mapInstanceRef.current.on('moveend zoomend', function() {
+          if (mapInstanceRef.current) {
+            mapInstanceRef.current.invalidateSize({pan: false});
+          }
+        });
+
         console.log('OSM map initialized successfully');
         setIsLoading(false);
 
@@ -167,11 +220,19 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
           if (!mapInstanceRef.current) return;
           const marker = LeafletLib.marker(coords).addTo(mapInstanceRef.current);
           marker.bindTooltip(station);
-          marker.bindPopup(`<h4>${station}</h4><p>Loading data...</p>`);
+          marker.bindPopup(`<h4>${station}</h4><p>Loading data...</p>`, {
+            maxWidth: isMobile ? 250 : 300,
+            autoPan: true,
+            autoPanPadding: [50, 50],
+            keepInView: true
+          });
           markersRef.current[station] = marker;
         });
 
         // Center map properly after everything loads
+        // Multiple invalidateSize calls to ensure proper calculation
+        setTimeout(() => mapInstanceRef.current && mapInstanceRef.current.invalidateSize(true), 100);
+        setTimeout(() => mapInstanceRef.current && mapInstanceRef.current.invalidateSize(true), 200);
         setTimeout(() => {
           if (mapInstanceRef.current && mapRef.current) {
             mapInstanceRef.current.invalidateSize(true);
@@ -183,6 +244,8 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
             if (mapRef.current) {
               mapRef.current.dataset.initializing = 'false';
             }
+            // Final invalidateSize after fitting bounds
+            setTimeout(() => mapInstanceRef.current && mapInstanceRef.current.invalidateSize(true), 100);
           }
         }, 300);
         
@@ -257,7 +320,12 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
             </div>
           `;
 
-          marker.bindPopup(popupContent);
+          marker.bindPopup(popupContent, {
+            maxWidth: isMobile ? 250 : 300,
+            autoPan: true,
+            autoPanPadding: [50, 50],
+            keepInView: true
+          });
           marker.bindTooltip(`${location.name_eng} - Wave Forecast`);
           markersRef.current[`forecast_${location.name_eng.replace(/\s+/g, '_').toLowerCase()}`] = marker;
         }
@@ -338,7 +406,12 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
       }
       
       popupContent += '</div>';
-      marker.bindPopup(popupContent);
+      marker.bindPopup(popupContent, {
+        maxWidth: isMobile ? 250 : 300,
+        autoPan: true,
+        autoPanPadding: [50, 50],
+        keepInView: true
+      });
     });
   };
 
@@ -398,8 +471,13 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
         }
         
         popupContent += '</div>';
-        marker.bindPopup(popupContent);
-        
+        marker.bindPopup(popupContent, {
+          maxWidth: isMobile ? 250 : 300,
+          autoPan: true,
+          autoPanPadding: [50, 50],
+          keepInView: true
+        });
+
         // Force popup refresh
         if (marker.isPopupOpen()) {
           marker.closePopup();
@@ -440,36 +518,36 @@ const OSMMap = ({ stations, currentStation, mapData, forecastData }) => {
   }, []);
 
   return (
-    <div 
-      ref={mapRef} 
-      style={{ 
-        width: '100%', 
+    <div
+      ref={mapRef}
+      style={{
+        width: '100%',
         height: mapHeight,
-        minHeight: mapHeight,
         borderRadius: '8px',
         border: '1px solid #2a4a8c',
-        position: 'relative',
-        zIndex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-      }} 
+        position: 'relative', // Critical: Establish positioning context for Leaflet
+        overflow: 'hidden' // Prevent any layout shifts
+      }}
     >
       {isLoading && (
         <div style={{
           position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: 'translate(-50%, -50%)',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
           zIndex: 1000,
           background: 'rgba(255, 255, 255, 0.9)',
-          padding: '20px',
-          borderRadius: '8px',
-          textAlign: 'center'
+          borderRadius: '8px'
         }}>
-          <div style={{ marginBottom: '10px' }}>Loading OpenStreetMap...</div>
-          <div className="spinner-border text-primary" role="status">
-            <span className="visually-hidden">Loading...</span>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ marginBottom: '10px' }}>Loading OpenStreetMap...</div>
+            <div className="spinner-border text-primary" role="status">
+              <span className="visually-hidden">Loading...</span>
+            </div>
           </div>
         </div>
       )}
