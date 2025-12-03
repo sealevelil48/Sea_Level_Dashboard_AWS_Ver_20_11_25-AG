@@ -128,6 +128,37 @@ function Dashboard() {
     };
   }, []);
 
+  // Lock body scroll when Table or Mariners fullscreen is active (iOS Safari fix)
+  // NOTE: Only lock for Table/Mariners, NOT for Graph/Map to avoid conflicts
+  useEffect(() => {
+    const shouldLockBody = isTableFullscreen || isMarinersFullscreen;
+
+    if (shouldLockBody) {
+      console.log('🔒 Locking body for fullscreen:', { isTableFullscreen, isMarinersFullscreen });
+
+      // Store original values
+      const originalOverflow = document.body.style.overflow;
+      const originalPosition = document.body.style.position;
+      const originalWidth = document.body.style.width;
+      const originalTop = document.body.style.top;
+
+      // Lock scroll (iOS Safari fix for fixed positioning)
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'fixed';
+      document.body.style.width = '100%';
+      document.body.style.top = '0';
+
+      // Cleanup: restore original values
+      return () => {
+        console.log('🔓 Unlocking body from fullscreen');
+        document.body.style.overflow = originalOverflow;
+        document.body.style.position = originalPosition;
+        document.body.style.width = originalWidth;
+        document.body.style.top = originalTop;
+      };
+    }
+  }, [isTableFullscreen, isMarinersFullscreen]);
+
   // Fetch forecast data on mount
   useEffect(() => {
     const fetchForecast = async () => {
@@ -1047,12 +1078,17 @@ function Dashboard() {
                           position: isTableFullscreen ? 'fixed' : 'relative',
                           top: isTableFullscreen ? 0 : 'auto',
                           left: isTableFullscreen ? 0 : 'auto',
-                          width: isTableFullscreen ? '100vw' : '100%',
-                          height: isTableFullscreen ? '100vh' : 'auto',
-                          zIndex: isTableFullscreen ? 1999 : 'auto',
+                          right: isTableFullscreen ? 0 : 'auto',
+                          bottom: isTableFullscreen ? 0 : 'auto',
+                          width: isTableFullscreen ? '100%' : 'auto',
+                          height: isTableFullscreen ? '100%' : 'auto',
+                          zIndex: isTableFullscreen ? 9999 : 'auto',
                           backgroundColor: isTableFullscreen ? '#0c1c35' : 'transparent',
-                          transition: 'all 0.3s ease',
-                          padding: isTableFullscreen ? '20px' : '0'
+                          padding: isTableFullscreen ? '15px' : '0',
+                          overflow: isTableFullscreen ? 'auto' : 'visible',
+                          WebkitOverflowScrolling: isTableFullscreen ? 'touch' : 'auto',
+                          transform: isTableFullscreen ? 'translateZ(0)' : 'none',
+                          WebkitTransform: isTableFullscreen ? 'translateZ(0)' : 'none'
                         }}
                       >
                         <Tabs activeKey={tableTab} onSelect={setTableTab} className="mb-2">
@@ -1295,13 +1331,17 @@ function Dashboard() {
                           position: isMarinersFullscreen ? 'fixed' : 'relative',
                           top: isMarinersFullscreen ? 0 : 'auto',
                           left: isMarinersFullscreen ? 0 : 'auto',
-                          width: isMarinersFullscreen ? '100vw' : '100%',
-                          height: isMarinersFullscreen ? '100vh' : 'auto',
-                          zIndex: isMarinersFullscreen ? 1999 : 'auto',
+                          right: isMarinersFullscreen ? 0 : 'auto',
+                          bottom: isMarinersFullscreen ? 0 : 'auto',
+                          width: isMarinersFullscreen ? '100%' : 'auto',
+                          height: isMarinersFullscreen ? '100%' : 'auto',
+                          zIndex: isMarinersFullscreen ? 9999 : 'auto',
                           backgroundColor: isMarinersFullscreen ? '#0c1c35' : 'transparent',
-                          transition: 'all 0.3s ease',
-                          padding: isMarinersFullscreen ? '20px' : '0',
-                          overflow: isMarinersFullscreen ? 'auto' : 'visible'
+                          padding: isMarinersFullscreen ? '15px' : '0',
+                          overflow: isMarinersFullscreen ? 'auto' : 'visible',
+                          WebkitOverflowScrolling: isMarinersFullscreen ? 'touch' : 'auto',
+                          transform: isMarinersFullscreen ? 'translateZ(0)' : 'none',
+                          WebkitTransform: isMarinersFullscreen ? 'translateZ(0)' : 'none'
                         }}
                       >
                         <Suspense fallback={<Spinner animation="border" />}>

@@ -327,14 +327,14 @@ export function applyMobilePortraitPositioning() {
     element.style.setProperty('overflow-y', 'auto', 'important');
   };
 
-  // Target all possible popup selectors
+  // Target all possible popup selectors (ONLY within GovMap container)
   const selectors = [
-    '.govmap-bubble',
-    'div[style*="position: absolute"]',
-    'div[style*="position: fixed"]',
-    'div[class*="bubble"]',
-    'div[class*="popup"]',
-    'div[class*="tooltip"]',
+    '#govmap-container .govmap-bubble',
+    '#govmap-container div[style*="position: absolute"]',
+    '#govmap-container div[style*="position: fixed"]',
+    '#govmap-container div[class*="bubble"]',
+    '#govmap-container div[class*="popup"]',
+    '#govmap-container div[class*="tooltip"]',
     '#govmap-container > div > div',
     '#govmap-container div[style]'
   ];
@@ -342,6 +342,11 @@ export function applyMobilePortraitPositioning() {
   selectors.forEach(selector => {
     const elements = document.querySelectorAll(selector);
     elements.forEach(element => {
+      // CRITICAL: Skip if element is a fullscreen container (Table View, Mariners Forecast, etc.)
+      if (element.closest('.tab-pane') && element.parentElement?.classList.contains('tab-content')) {
+        return; // Don't apply positioning to fullscreen tab containers
+      }
+
       // Check if element contains popup-like content
       if (element.innerHTML && (
         element.innerHTML.includes('Sea Level') ||
