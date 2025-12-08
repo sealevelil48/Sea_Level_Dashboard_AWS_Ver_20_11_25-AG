@@ -114,6 +114,11 @@ const AccessibilityWidget = () => {
     updateSetting('highlightLinks', !settings.highlightLinks);
   };
 
+  // Handle dyslexia font toggle
+  const handleDyslexiaFontToggle = () => {
+    updateSetting('dyslexiaFont', !settings.dyslexiaFont);
+  };
+
   return (
     <>
       {/* Floating Action Button */}
@@ -288,6 +293,26 @@ const AccessibilityWidget = () => {
                 <span className="accessibility-toggle-text">
                   {settings.highlightLinks ? 'Enabled' : 'Disabled'}
                 </span>
+              </label>
+            </div>
+
+            {/* Dyslexia-Friendly Font Section */}
+            <div className="accessibility-section">
+              <h3 className="accessibility-section-title">Dyslexia-Friendly Font</h3>
+              <label className="accessibility-toggle-label">
+                <span className="accessibility-toggle-text">Use OpenDyslexic Font</span>
+                <div className="accessibility-toggle-switch-wrapper">
+                  <input
+                    type="checkbox"
+                    checked={settings.dyslexiaFont}
+                    onChange={handleDyslexiaFontToggle}
+                    className="accessibility-toggle-input"
+                    role="switch"
+                    aria-checked={settings.dyslexiaFont}
+                    aria-label="Toggle dyslexia-friendly font"
+                  />
+                  <span className="accessibility-toggle-switch"></span>
+                </div>
               </label>
             </div>
 

@@ -1493,6 +1493,65 @@ body.a11y-highlight-links a * {
   color: inherit !important;
 }
 
+/* ========== DYSLEXIA-FRIENDLY FONT MODE ========== */
+
+/* OpenDyslexic Font */
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url('https://cdn.jsdelivr.net/gh/antijingoist/opendyslexic@master/compiled/OpenDyslexic-Regular.otf') format('opentype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'OpenDyslexic';
+  src: url('https://cdn.jsdelivr.net/gh/antijingoist/opendyslexic@master/compiled/OpenDyslexic-Bold.otf') format('opentype');
+  font-weight: bold;
+  font-style: normal;
+}
+
+/* Apply OpenDyslexic font globally when dyslexia mode is active */
+body.a11y-dyslexia-font,
+body.a11y-dyslexia-font * {
+  font-family: 'OpenDyslexic', Arial, sans-serif !important;
+}
+
+body.a11y-dyslexia-font {
+  line-height: 1.8 !important;
+  letter-spacing: 0.12em !important;
+  word-spacing: 0.16em !important;
+}
+
+body.a11y-dyslexia-font p,
+body.a11y-dyslexia-font div,
+body.a11y-dyslexia-font span,
+body.a11y-dyslexia-font li {
+  line-height: 2 !important;
+}
+
+body.a11y-dyslexia-font .navbar-brand,
+body.a11y-dyslexia-font h1,
+body.a11y-dyslexia-font h2,
+body.a11y-dyslexia-font h3,
+body.a11y-dyslexia-font h4 {
+  font-family: 'OpenDyslexic', Arial, sans-serif !important;
+  letter-spacing: 0.08em !important;
+}
+
+/* Ensure tables remain readable */
+body.a11y-dyslexia-font .table th,
+body.a11y-dyslexia-font .table td {
+  font-family: 'OpenDyslexic', Arial, sans-serif !important;
+  padding: 12px 8px !important;
+}
+
+/* Form controls */
+body.a11y-dyslexia-font .form-control,
+body.a11y-dyslexia-font .form-select,
+body.a11y-dyslexia-font .btn {
+  font-family: 'OpenDyslexic', Arial, sans-serif !important;
+}
+
 /* ========== ACCESSIBILITY MODE COMBINATIONS ========== */
 
 /* High contrast + Highlight links */

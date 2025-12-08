@@ -12,7 +12,8 @@ const DEFAULT_SETTINGS = {
   contrast: 'normal',
   textSize: 'normal',
   largeCursor: false,
-  highlightLinks: false
+  highlightLinks: false,
+  dyslexiaFont: false
 };
 
 /**
@@ -65,7 +66,8 @@ export const AccessibilityProvider = ({ children }) => {
       'a11y-text-large',
       'a11y-text-xl',
       'a11y-large-cursor',
-      'a11y-highlight-links'
+      'a11y-highlight-links',
+      'a11y-dyslexia-font'
     );
 
     // Apply contrast class
@@ -97,6 +99,11 @@ export const AccessibilityProvider = ({ children }) => {
     if (accessibilitySettings.highlightLinks) {
       document.body.classList.add('a11y-highlight-links');
     }
+
+    // Apply dyslexia font class
+    if (accessibilitySettings.dyslexiaFont) {
+      document.body.classList.add('a11y-dyslexia-font');
+    }
   }, []);
 
   /**
@@ -125,7 +132,10 @@ export const AccessibilityProvider = ({ children }) => {
                 : DEFAULT_SETTINGS.largeCursor,
               highlightLinks: typeof parsed.highlightLinks === 'boolean'
                 ? parsed.highlightLinks
-                : DEFAULT_SETTINGS.highlightLinks
+                : DEFAULT_SETTINGS.highlightLinks,
+              dyslexiaFont: typeof parsed.dyslexiaFont === 'boolean'
+                ? parsed.dyslexiaFont
+                : DEFAULT_SETTINGS.dyslexiaFont
             };
             setSettings(validatedSettings);
             applyAccessibilityClasses(validatedSettings);
@@ -182,6 +192,7 @@ export const AccessibilityProvider = ({ children }) => {
         break;
       case 'largeCursor':
       case 'highlightLinks':
+      case 'dyslexiaFont':
         isValid = typeof value === 'boolean';
         break;
       default:
