@@ -84,7 +84,7 @@ function Dashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const [forecastPage, setForecastPage] = useState(1);
   const [itemsPerPage] = useState(50);
-  const [sortConfig, setSortConfig] = useState({ key: 'Tab_DateTime', direction: 'desc' });
+  const [sortConfig, setSortConfig] = useState({ key: 'Tab_DateTime', direction: 'asc' });
 
   // Point selection state
   const [selectedPoints, setSelectedPoints] = useState([]);
@@ -468,11 +468,11 @@ function Dashboard() {
 
         setGraphData(allData || []);
 
-        // Sort data in DESC order by default (newest first)
+        // Sort data in ASC order by default (oldest to newest)
         setTableData([...(allData || [])].sort((a, b) => {
           const dateA = a.Tab_DateTime || a.Date || '';
           const dateB = b.Tab_DateTime || b.Date || '';
-          return dateB.localeCompare(dateA);
+          return dateA.localeCompare(dateB);
         }));
         setCurrentPage(1);
 

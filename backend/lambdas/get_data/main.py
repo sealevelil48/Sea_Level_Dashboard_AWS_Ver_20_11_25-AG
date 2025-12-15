@@ -1,4 +1,6 @@
-# backend/lambdas/get_data/main.py - FIXED DATE FILTERING VERSION
+# backend/lambdas/get_data/main.py - ALWAYS RAW DATA VERSION
+# MODIFIED: Always returns 1-minute interval data regardless of date range
+# Previous version used dynamic aggregation based on date range
 import json
 import logging
 import sys
@@ -70,33 +72,13 @@ def parse_date_parameter(date_str):
         return None
 
 def calculate_aggregation_level(start_date, end_date):
-    """Determine optimal aggregation level based on date range"""
-    if not start_date or not end_date:
-        return 'raw', None
-
-    try:
-        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-        days = (end_dt - start_dt).days
-
-        # More aggressive aggregation to reduce payload size
-        if days <= 3:
-            return 'raw', None              # ~4,320 rows/station (manageable)
-        elif days <= 7:
-            return '5min', '5 minutes'      # ~2,016 rows/station
-        elif days <= 14:
-            return '15min', '15 minutes'    # ~1,344 rows/station
-        elif days <= 30:
-            return 'hourly', '1 hour'       # ~720 rows/station
-        elif days <= 90:
-            return 'hourly', '3 hours'      # ~720 rows/station
-        elif days <= 180:
-            return 'daily', '1 day'         # ~180 rows/station
-        else:
-            return 'weekly', '1 week'       # ~52 rows/station
-    except Exception as e:
-        logger.warning(f"Date calculation error: {e}")
-        return 'raw', None
+    """
+    MODIFIED: Always return raw 1-minute interval data regardless of date range.
+    Previous behavior used smart aggregation based on date range.
+    Now bypassed to always return raw data.
+    """
+    # Always return raw data - no aggregation
+    return 'raw', None
 
 def detect_anomalies(df):
     """
@@ -188,7 +170,10 @@ def clean_baseline_columns(df):
 
 def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                                 data_source='default', show_anomalies=False):
-    """Optimized data loading with smart aggregation and FIXED date filtering"""
+    """
+    MODIFIED: Always loads raw 1-minute interval data regardless of date range.
+    Previous version used smart aggregation - now bypassed to always return raw data.
+    """
     if not DATABASE_AVAILABLE or not engine:
         logger.warning("Database not available")
         return pd.DataFrame()
@@ -434,7 +419,8 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
 def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                               data_source='default', show_anomalies=False):
     """
-    Optimized batch data loading for multiple stations in a single query
+    MODIFIED: Always loads raw 1-minute interval data for multiple stations.
+    Previous version used smart aggregation - now bypassed to always return raw data.
     """
     if not DATABASE_AVAILABLE or not engine:
         logger.warning("Database not available")

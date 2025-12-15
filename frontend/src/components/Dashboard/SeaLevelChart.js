@@ -57,6 +57,14 @@ const SeaLevelChart = React.forwardRef(({
   const chartRef = useRef(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
+  // Calculate total data points across all datasets
+  const totalDataPoints = React.useMemo(() => {
+    if (!data || !data.datasets || data.datasets.length === 0) return 0;
+    return data.datasets.reduce((sum, dataset) => {
+      return sum + (Array.isArray(dataset.data) ? dataset.data.length : 0);
+    }, 0);
+  }, [data]);
+
   // Expose chart ref to parent component
   React.useImperativeHandle(ref, () => ({
     exportAsImage: () => {
@@ -81,6 +89,39 @@ const SeaLevelChart = React.forwardRef(({
 
   // Determine if mobile based on window width
   const isMobileView = windowWidth < 768;
+
+  // Dynamic decimation configuration based on data point count
+  // For 3 days at 1-minute intervals = 4,320 points
+  // For 7 days at 1-minute intervals = 10,080 points
+  const decimationConfig = React.useMemo(() => {
+    let config;
+    // Disable decimation for small datasets (up to 10,000 points)
+    if (totalDataPoints <= 10000) {
+      config = {
+        enabled: false
+      };
+      console.log(`[SeaLevelChart] Decimation DISABLED - ${totalDataPoints} points (≤10,000 threshold)`);
+    }
+    // For medium datasets (10,000 - 50,000 points), use high sample count
+    else if (totalDataPoints <= 50000) {
+      config = {
+        enabled: true,
+        algorithm: 'lttb',
+        samples: 5000
+      };
+      console.log(`[SeaLevelChart] Decimation enabled with 5000 samples - ${totalDataPoints} points (10K-50K range)`);
+    }
+    // For large datasets (>50,000 points), use moderate decimation
+    else {
+      config = {
+        enabled: true,
+        algorithm: 'lttb',
+        samples: 8000
+      };
+      console.log(`[SeaLevelChart] Decimation enabled with 8000 samples - ${totalDataPoints} points (>50K)`);
+    }
+    return config;
+  }, [totalDataPoints]);
 
   // 4. Chart Configuration
   const options = {
@@ -241,11 +282,7 @@ const SeaLevelChart = React.forwardRef(({
         },
         // No limits - allow panning to see predictions in future dates
       },
-      decimation: {
-        enabled: true,
-        algorithm: 'lttb', // "Largest-Triangle-Three-Buckets" (Preserves peaks)
-        samples: 500, // Downsamples 10k points to 500 pixels when zoomed out
-      },
+      decimation: decimationConfig,
       legend: {
         position: isMobileView || isMobile ? 'bottom' : 'top', // UX WIN: Moves legend below chart on mobile
         align: 'start',

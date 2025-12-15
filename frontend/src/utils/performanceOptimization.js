@@ -5,11 +5,14 @@
 // Data virtualization for large datasets
 export const dataOptimizer = {
   // Downsample data for visualization when exceeding threshold
-  downsampleData: (data, maxPoints = 1000) => {
+  // Updated threshold from 1000 to 10000 to support 1-minute interval data for up to 7 days
+  // For 3 days at 1-minute intervals = 4,320 points
+  // For 7 days at 1-minute intervals = 10,080 points
+  downsampleData: (data, maxPoints = 10000) => {
     if (!Array.isArray(data) || data.length <= maxPoints) {
       return data;
     }
-    
+
     const ratio = Math.ceil(data.length / maxPoints);
     return data.filter((_, index) => index % ratio === 0);
   },
@@ -24,9 +27,10 @@ export const dataOptimizer = {
   },
   
   // Optimize time series data for Plotly
-  optimizeForPlotly: (data, threshold = 5000) => {
+  // Updated threshold from 5000 to 15000 to support more detailed data visualization
+  optimizeForPlotly: (data, threshold = 15000) => {
     if (data.length <= threshold) return data;
-    
+
     // Use scattergl for better performance with large datasets
     return {
       data: dataOptimizer.downsampleData(data, threshold),
