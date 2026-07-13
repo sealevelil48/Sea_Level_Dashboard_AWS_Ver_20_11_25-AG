@@ -3,31 +3,36 @@ import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.error
 
-def lambda_handler(event, context):
-    """Fetch and parse IMS sea forecast XML data"""
+
+def _safe_print(message):
+    """Avoid crashing when stdout is no longer connected (broken pipe)."""
     try:
-        # Fetch live XML data from IMS
-        url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_sea.xml"
-        
-        try:
-            print(f"Fetching XML from: {url}")
-            with urllib.request.urlopen(url, timeout=10) as response:
-                raw_data = response.read()
-                # Try different encodings
-                for encoding in ['utf-8', 'iso-8859-1', 'windows-1255']:
-                    try:
-                        xml_data = raw_data.decode(encoding)
-                        print(f"Successfully decoded with {encoding}, length: {len(xml_data)}")
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                else:
-                    xml_data = raw_data.decode('utf-8', errors='ignore')
-                    print(f"Decoded with errors ignored, length: {len(xml_data)}")
-        except (urllib.error.URLError, UnicodeDecodeError) as e:
-            print(f"Failed to fetch/decode XML: {e}, using fallback data")
-            # Fallback to static data if URL fails
-            xml_data = """<IsraelSeaForecastMorning>
+        print(message)
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+
+
+def build_forecast_payload():
+    """Fetch and parse IMS sea forecast XML data into a JSON payload."""
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_sea.xml"
+
+    try:
+        _safe_print(f"Fetching XML from: {url}")
+        with urllib.request.urlopen(url, timeout=10) as response:
+            raw_data = response.read()
+            for encoding in ['utf-8', 'iso-8859-1', 'windows-1255', 'iso-8859-8', 'cp1255']:
+                try:
+                    xml_data = raw_data.decode(encoding)
+                    _safe_print(f"Successfully decoded with {encoding}, length: {len(xml_data)}")
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                xml_data = raw_data.decode('utf-8', errors='ignore')
+                _safe_print(f"Decoded with errors ignored, length: {len(xml_data)}")
+    except (urllib.error.URLError, UnicodeDecodeError) as e:
+        _safe_print(f"Failed to fetch/decode XML: {e}, using fallback data")
+        xml_data = """<IsraelSeaForecastMorning>
 <Originator>
 <Organization>Israel Meteorological Service</Organization>
 <Generator>Global Distribution of Meteorological Information</Generator>
@@ -162,60 +167,75 @@ def lambda_handler(event, context):
 </LocationData>
 </Location>
 </IsraelSeaForecastMorning>"""
-        
-        print("Parsing XML data...")
-        root = ET.fromstring(xml_data)
-        
-        forecast_data = {
-            "metadata": {
-                "organization": root.find('.//Organization').text,
-                "title": root.find('.//Title').text,
-                "issue_datetime": root.find('.//IssueDateTime').text
-            },
-            "locations": []
+
+    _safe_print("Parsing XML data...")
+    root = ET.fromstring(xml_data)
+
+    forecast_data = {
+        "metadata": {
+            "organization": root.find('.//Organization').text if root.find('.//Organization') is not None else '',
+            "title": root.find('.//Title').text if root.find('.//Title') is not None else '',
+            "issue_datetime": root.find('.//IssueDateTime').text if root.find('.//IssueDateTime') is not None else ''
+        },
+        "locations": []
+    }
+    _safe_print(f"Parsed metadata: {forecast_data['metadata']}")
+
+    for location in root.findall('Location'):
+        location_meta = location.find('LocationMetaData')
+        location_data = location.find('LocationData')
+
+        if location_meta is None:
+            continue
+
+        original_name = location_meta.find('LocationNameEng').text if location_meta.find('LocationNameEng') is not None else ''
+        mapped_name = map_location_name(original_name)
+
+        location_info = {
+            "id": location_meta.find('LocationId').text if location_meta.find('LocationId') is not None else '',
+            "name_eng": mapped_name,
+            "name_heb": location_meta.find('LocationNameHeb').text if location_meta.find('LocationNameHeb') is not None else '',
+            "coordinates": get_location_coordinates(mapped_name),
+            "forecasts": []
         }
-        print(f"Parsed metadata: {forecast_data['metadata']}")
-        
-        for location in root.findall('Location'):
-            location_meta = location.find('LocationMetaData')
-            location_data = location.find('LocationData')
-            
-            # Map location names to handle IMS naming inconsistencies
-            original_name = location_meta.find('LocationNameEng').text
-            mapped_name = map_location_name(original_name)
-            
-            location_info = {
-                "id": location_meta.find('LocationId').text,
-                "name_eng": mapped_name,
-                "name_heb": location_meta.find('LocationNameHeb').text,
-                "coordinates": get_location_coordinates(mapped_name),
-                "forecasts": []
-            }
-            
-            for time_unit in location_data.findall('TimeUnitData'):
-                forecast_period = {
-                    "from": time_unit.find('DateTimeFrom').text,
-                    "to": time_unit.find('DateTimeTo').text,
-                    "elements": {}
-                }
-                
-                for element in time_unit.findall('Element'):
-                    element_name = element.find('ElementName').text
-                    element_value = element.find('ElementValue').text
-                    
-                    if element_name == "Sea status and waves height":
-                        forecast_period["elements"]["wave_height"] = element_value
-                    elif element_name == "Sea temperature":
-                        forecast_period["elements"]["sea_temperature"] = int(element_value)
-                    elif element_name == "Wind direction and speed":
-                        forecast_period["elements"]["wind"] = element_value
-                
-                location_info["forecasts"].append(forecast_period)
-            
+
+        if location_data is None:
             forecast_data["locations"].append(location_info)
-        
-        print(f"Processed {len(forecast_data['locations'])} locations")
-        
+            continue
+
+        for time_unit in location_data.findall('TimeUnitData'):
+            forecast_period = {
+                "from": time_unit.find('DateTimeFrom').text if time_unit.find('DateTimeFrom') is not None else '',
+                "to": time_unit.find('DateTimeTo').text if time_unit.find('DateTimeTo') is not None else '',
+                "elements": {}
+            }
+
+            for element in time_unit.findall('Element'):
+                element_name = element.find('ElementName').text if element.find('ElementName') is not None else ''
+                element_value = element.find('ElementValue').text if element.find('ElementValue') is not None else ''
+
+                if element_name == "Sea status and waves height":
+                    forecast_period["elements"]["wave_height"] = element_value
+                elif element_name == "Sea temperature":
+                    try:
+                        forecast_period["elements"]["sea_temperature"] = int(element_value)
+                    except (ValueError, TypeError):
+                        forecast_period["elements"]["sea_temperature"] = element_value
+                elif element_name == "Wind direction and speed":
+                    forecast_period["elements"]["wind"] = element_value
+
+            location_info["forecasts"].append(forecast_period)
+
+        forecast_data["locations"].append(location_info)
+
+    _safe_print(f"Processed {len(forecast_data['locations'])} locations")
+    return forecast_data
+
+
+def lambda_handler(event, context):
+    """Fetch and parse IMS sea forecast XML data"""
+    try:
+        forecast_data = build_forecast_payload()
         return {
             'statusCode': 200,
             'headers': {
@@ -226,9 +246,8 @@ def lambda_handler(event, context):
             },
             'body': json.dumps(forecast_data)
         }
-        
     except Exception as e:
-        print(f"Error in lambda_handler: {e}")
+        _safe_print(f"Error in lambda_handler: {e}")
         return {
             'statusCode': 500,
             'headers': {
@@ -237,6 +256,7 @@ def lambda_handler(event, context):
             },
             'body': json.dumps({'error': str(e)})
         }
+
 
 def map_location_name(original_name):
     """Map IMS location names to our preferred names"""

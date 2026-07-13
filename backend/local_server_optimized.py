@@ -91,7 +91,7 @@ try:
     from lambdas.get_data.main import lambda_handler as get_data_handler
     from lambdas.get_live_data.main import lambda_handler as get_live_data_handler
     from lambdas.get_predictions.main import lambda_handler as get_predictions_handler
-    from lambdas.get_sea_forecast.main import lambda_handler as get_sea_forecast_handler
+    from lambdas.get_sea_forecast.main import lambda_handler as get_sea_forecast_handler, build_forecast_payload
     from lambdas.get_ims_warnings.main import lambda_handler as get_ims_warnings_handler
     logger.info("[OK] Lambda handlers imported successfully")
 except ImportError as e:
@@ -686,17 +686,15 @@ async def get_sea_forecast(request: Request):
     
     async def fetch_forecast():
         try:
-            event = {"httpMethod": "GET", "path": "/sea-forecast", "queryStringParameters": {}}
-            response = get_sea_forecast_handler(event, None)
-            result = lambda_to_fastapi_response(response)
-            
-            # Cache forecast for 30 minutes
-            if hasattr(result, 'headers'):
-                result.headers['Cache-Control'] = 'public, max-age=1800'
-            
-            return result
+            forecast_payload = build_forecast_payload()
+            response = JSONResponse(
+                content=forecast_payload,
+                status_code=200,
+                headers={"Cache-Control": "public, max-age=1800"}
+            )
+            return response
         except Exception as e:
-            logger.error(f"Error in get_sea_forecast: {e}")
+            logger.exception("Error in get_sea_forecast")
             return JSONResponse(
                 content={"error": str(e), "forecast": []},
                 status_code=500
@@ -953,11 +951,14 @@ async def get_stations_map(end_date: Optional[str] = None):
 async def get_sea_forecast_direct():
     """Get sea conditions forecast - direct endpoint for maps"""
     try:
-        event = {"httpMethod": "GET", "path": "/sea-forecast", "queryStringParameters": {}}
-        response = get_sea_forecast_handler(event, None)
-        return lambda_to_fastapi_response(response)
+        forecast_payload = build_forecast_payload()
+        return JSONResponse(
+            content=forecast_payload,
+            status_code=200,
+            headers={"Cache-Control": "public, max-age=1800"}
+        )
     except Exception as e:
-        logger.error(f"Error in get_sea_forecast_direct: {e}")
+        logger.exception("Error in get_sea_forecast_direct")
         return JSONResponse(
             content={"error": str(e), "locations": []},
             status_code=500
