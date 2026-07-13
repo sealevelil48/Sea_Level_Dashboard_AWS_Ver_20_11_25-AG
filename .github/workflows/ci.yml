@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:13
+        image: postgres:15
         env:
           POSTGRES_USER: user
           POSTGRES_PASSWORD: password
@@ -25,18 +25,30 @@ jobs:
           --health-retries 5
     strategy:
       matrix:
-        python-version: [3.10, 3.11]
+        python-version: ["3.11", "3.12"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          allow-prereleases: false
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libpq-dev \
+            build-essential \
+            python3-dev \
+            libfreetype6-dev \
+            libpng-dev
 
       - name: Cache pip
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
@@ -51,6 +63,8 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -q
+          pytest -q --tb=short
         env:
           DATABASE_URL: postgresql://user:password@localhost:5432/testdb
+          ENV: test
+          DEBUG: false
