@@ -28,10 +28,10 @@
   },
   "scripts": {
     "start": "cross-env REACT_APP_API_URL=http://127.0.0.1:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
-    "start-govmap": "cross-env HOST=0.0.0.0 PORT=3000 REACT_APP_API_URL=http://5.102.231.16:30886 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
-    "start-external": "cross-env REACT_APP_API_URL=http://5.102.231.16:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
+    "start-govmap": "cross-env HOST=0.0.0.0 PORT=3000 REACT_APP_API_URL=http://85.155.88.90:30886 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
+    "start-external": "cross-env REACT_APP_API_URL=http://85.155.88.90:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
     "build": "cross-env GENERATE_SOURCEMAP=false react-scripts build",
-    "build-govmap": "cross-env GENERATE_SOURCEMAP=false REACT_APP_API_URL=http://5.102.231.16:30886 react-scripts build",
+    "build-govmap": "cross-env GENERATE_SOURCEMAP=false REACT_APP_API_URL=http://85.155.88.90:30886 react-scripts build",
     "serve": "npx serve -s build -l 30887",
     "start:prod": "npm run build && npm run serve",
     "start:prod-govmap": "npm run build-govmap && npm run serve",

@@ -15,7 +15,7 @@ echo.
 
 REM Set default host if not defined
 if not defined DASHBOARD_HOST (
-    set DASHBOARD_HOST=5.102.231.16
+    set DASHBOARD_HOST=85.155.88.90
 )
 
 echo [1/4] Stopping any existing development servers...

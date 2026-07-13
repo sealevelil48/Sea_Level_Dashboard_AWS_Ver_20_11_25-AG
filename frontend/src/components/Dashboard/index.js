@@ -351,7 +351,11 @@ function Dashboard() {
         if (stationData.length > 0) {
           stationCount++;
           const levels = stationData.map(d => d.Tab_Value_mDepthC1).filter(v => !isNaN(v));
-          const temps = stationData.map(d => d.Tab_Value_monT2m).filter(v => !isNaN(v));
+          // Filter out anomaly points when calculating temperature to avoid including invalid temp data
+          const temps = stationData
+            .filter(d => d.anomaly !== -1)
+            .map(d => d.Tab_Value_monT2m)
+            .filter(v => !isNaN(v));
 
           if (levels.length > 0) {
             currentLevel += levels[levels.length - 1];
@@ -379,7 +383,11 @@ function Dashboard() {
       }
     } else {
       const levels = data.map(d => d.Tab_Value_mDepthC1).filter(v => !isNaN(v));
-      const temps = data.map(d => d.Tab_Value_monT2m).filter(v => !isNaN(v));
+      // Filter out anomaly points when calculating temperature to avoid including invalid temp data
+      const temps = data
+        .filter(d => d.anomaly !== -1)
+        .map(d => d.Tab_Value_monT2m)
+        .filter(v => !isNaN(v));
 
       if (levels.length > 0) {
         currentLevel = levels[levels.length - 1];
