@@ -54,6 +54,21 @@ const SeaForecastView = ({ apiBaseUrl }) => {
 
 
 
+  const getUvSeverityColor = (uvValue) => {
+    if (uvValue === null || uvValue === undefined || uvValue === '') return 'secondary';
+    if (uvValue >= 8) return 'danger';
+    if (uvValue >= 6) return 'warning';
+    if (uvValue >= 3) return 'info';
+    return 'success';
+  };
+
+  const getUvDisplayText = (uvInfo) => {
+    if (!uvInfo || uvInfo.value === null || uvInfo.value === undefined || uvInfo.value === '') {
+      return 'N/A';
+    }
+    return uvInfo.display || `${uvInfo.value}`;
+  };
+
   if (loading) {
     return (
       <div className="text-center p-5">
@@ -156,6 +171,15 @@ const SeaForecastView = ({ apiBaseUrl }) => {
                           <span className="small">Wind:</span>
                           <Badge bg={getWindRiskColor(forecast.elements.wind)}>
                             {parseWindInfo(forecast.elements.wind)}
+                          </Badge>
+                        </div>
+                      </Col>
+
+                      <Col xs={12}>
+                        <div className="d-flex justify-content-between align-items-center">
+                          <span className="small">UV Index:</span>
+                          <Badge bg={getUvSeverityColor(forecast.elements.uv_index?.value)}>
+                            {getUvDisplayText(forecast.elements.uv_index)}
                           </Badge>
                         </div>
                       </Col>

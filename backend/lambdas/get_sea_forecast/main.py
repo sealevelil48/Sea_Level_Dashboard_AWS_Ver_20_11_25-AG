@@ -2,6 +2,33 @@ import json
 import xml.etree.ElementTree as ET
 import urllib.request
 import urllib.error
+from datetime import datetime
+
+
+def _normalize_city_name(name):
+    """Normalize a city name for robust matching (strip, collapse spaces, lowercase)."""
+    if not name:
+        return ""
+    return " ".join(str(name).strip().split()).lower()
+
+
+# Map IMS UV-feed English city names (from <LocationNameEng>) -> dashboard sections.
+# Keys are normalized (lowercase) names. Only cities present in the live isr_rad.xml
+# feed are used as data sources.
+UV_CITY_TO_SECTION = {
+    "tiberias": "Sea of Galilee",
+    "eilat": "Gulf of Eilat",
+    "haifa": "Northern Coast",
+    "acre": "Northern Coast",
+    "ashdod": "Southern Coast",
+    "ashkelon": "Southern Coast",
+    "tel aviv": "Central Coast",
+    "tel-aviv": "Central Coast",
+    "tel aviv-yafo": "Central Coast",
+    # The live feed has no Tel Aviv station; Hadera is the closest
+    # central-coast station and supplies Central Coast UV data.
+    "hadera": "Central Coast",
+}
 
 
 def _safe_print(message):
@@ -10,6 +37,108 @@ def _safe_print(message):
         print(message)
     except (BrokenPipeError, OSError, ValueError):
         pass
+
+
+def _parse_datetime(value):
+    """Parse IMS datetime strings into datetime objects."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def _parse_uv_index(raw_value):
+    """Parse UV index from IMS radiation feed values."""
+    if raw_value is None:
+        return None
+    value = str(raw_value).strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        if value.upper() == "M":
+            return 4
+        if value.upper() == "L":
+            return 0
+        return None
+
+
+def _uv_severity_label(uv_value):
+    """Return a human-friendly UV severity label."""
+    if uv_value is None:
+        return "N/A"
+    if uv_value >= 8:
+        return "Very High"
+    if uv_value >= 6:
+        return "High"
+    if uv_value >= 3:
+        return "Moderate"
+    return "Low"
+
+
+def _build_uv_payload():
+    """Fetch and filter the IMS UV feed down to the cities relevant to the sea forecast."""
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_rad.xml"
+
+    try:
+        _safe_print(f"Fetching UV XML from: {url}")
+        with urllib.request.urlopen(url, timeout=10) as response:
+            raw_data = response.read()
+            for encoding in ['utf-8', 'iso-8859-1', 'windows-1255', 'iso-8859-8', 'cp1255']:
+                try:
+                    xml_data = raw_data.decode(encoding)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                xml_data = raw_data.decode('utf-8', errors='ignore')
+    except (urllib.error.URLError, UnicodeDecodeError) as e:
+        _safe_print(f"Failed to fetch/decode UV XML: {e}")
+        return {}
+
+    root = ET.fromstring(xml_data)
+    uv_payload = {}
+
+    for location in root.findall('Location'):
+        location_meta = location.find('LocationMetaData')
+        if location_meta is None:
+            continue
+
+        # Strictly identify the city by its English name; ignore Hebrew tags.
+        city_name = (location_meta.findtext('LocationNameEng') or '').strip()
+        if not city_name:
+            continue
+
+        # Route the city to a dashboard section using the English name only.
+        if _normalize_city_name(city_name) not in UV_CITY_TO_SECTION:
+            continue
+
+        location_data = location.find('LocationData')
+        if location_data is None:
+            continue
+
+        hourly_series = []
+        for time_unit in location_data.findall('TimeUnitData'):
+            solrad_period = time_unit.find('SolRadPeriod')
+            element = time_unit.find('Element')
+            if solrad_period is None or element is None:
+                continue
+
+            hourly_series.append({
+                'from': solrad_period.findtext('DateTimeFrom') or '',
+                'to': solrad_period.findtext('DateTimeTo') or '',
+                'value': element.findtext('ElementValue') or '',
+                'index': _parse_uv_index(element.findtext('ElementIndex'))
+            })
+
+        if hourly_series:
+            # Key by the raw English feed name so the section matcher can find it.
+            uv_payload[city_name] = hourly_series
+
+    return uv_payload
 
 
 def build_forecast_payload():
@@ -170,6 +299,7 @@ def build_forecast_payload():
 
     _safe_print("Parsing XML data...")
     root = ET.fromstring(xml_data)
+    uv_payload = _build_uv_payload()
 
     forecast_data = {
         "metadata": {
@@ -223,6 +353,57 @@ def build_forecast_payload():
                         forecast_period["elements"]["sea_temperature"] = element_value
                 elif element_name == "Wind direction and speed":
                     forecast_period["elements"]["wind"] = element_value
+
+            block_start = _parse_datetime(forecast_period.get('from'))
+            block_end = _parse_datetime(forecast_period.get('to'))
+            # Cities that feed this dashboard section, per the English-name mapping.
+            relevant_city_keys = [city for city, section in UV_CITY_TO_SECTION.items() if section == mapped_name]
+            matched_hours = []
+
+            for city_key in relevant_city_keys:
+                # Find the feed series for this city (keyed by its raw English name).
+                hourly_series = next(
+                    (series for raw_name, series in uv_payload.items() if _normalize_city_name(raw_name) == city_key),
+                    []
+                )
+                for entry in hourly_series:
+                    entry_start = _parse_datetime(entry.get('from'))
+                    entry_end = _parse_datetime(entry.get('to'))
+                    if entry_start and entry_end and block_start and block_end:
+                        if entry_start < block_end and entry_end > block_start:
+                            matched_hours.append(entry)
+
+            if matched_hours:
+                uv_values = [entry.get('index') for entry in matched_hours if entry.get('index') is not None]
+                max_uv = max(uv_values) if uv_values else None
+                min_uv = min(uv_values) if uv_values else None
+                summary = f"Max {max_uv}" if max_uv is not None else "N/A"
+                if min_uv is not None and max_uv is not None and min_uv != max_uv:
+                    summary = f"{min_uv}-{max_uv}"
+                display_value = f"{summary} ({_uv_severity_label(max_uv)})" if max_uv is not None else "N/A"
+                forecast_period["elements"]["uv_index"] = {
+                    "value": max_uv,
+                    "display": display_value,
+                    "severity": _uv_severity_label(max_uv).lower().replace(' ', '-'),
+                    "hourly_values": [
+                        {
+                            "from": entry.get('from'),
+                            "to": entry.get('to'),
+                            "index": entry.get('index'),
+                            "label": _uv_severity_label(entry.get('index'))
+                        }
+                        for entry in matched_hours
+                    ],
+                    "range": f"{min_uv}-{max_uv}" if min_uv is not None and max_uv is not None and min_uv != max_uv else str(max_uv) if max_uv is not None else None,
+                }
+            else:
+                forecast_period["elements"]["uv_index"] = {
+                    "value": None,
+                    "display": "N/A",
+                    "severity": "secondary",
+                    "hourly_values": [],
+                    "range": None,
+                }
 
             location_info["forecasts"].append(forecast_period)
 
