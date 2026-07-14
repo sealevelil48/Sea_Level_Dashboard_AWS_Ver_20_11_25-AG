@@ -62,11 +62,33 @@ const SeaForecastView = ({ apiBaseUrl }) => {
     return 'success';
   };
 
-  const getUvDisplayText = (uvInfo) => {
+  const getCurrentHourUvIndex = (uvInfo) => {
+    if (!uvInfo || !Array.isArray(uvInfo.hourly_values) || uvInfo.hourly_values.length === 0) {
+      return null;
+    }
+    const now = new Date();
+    for (const entry of uvInfo.hourly_values) {
+      const from = new Date(entry.from);
+      const to = new Date(entry.to);
+      if (!isNaN(from) && !isNaN(to) && from <= now && now < to) {
+        return entry.index;
+      }
+    }
+    return null;
+  };
+
+  const formatUvDisplay = (uvInfo) => {
     if (!uvInfo || uvInfo.value === null || uvInfo.value === undefined || uvInfo.value === '') {
       return 'N/A';
     }
-    return uvInfo.display || `${uvInfo.value}`;
+    const base = uvInfo.display || `${uvInfo.value}`;
+    const current = getCurrentHourUvIndex(uvInfo);
+    if (current === null || current === undefined) {
+      return base;
+    }
+    // Append the current real-time hourly index inside the parentheses:
+    // "0-11 (Very High)" -> "0-11 (Very High, 9)"
+    return base.replace(/\)$/, `, ${current})`);
   };
 
   if (loading) {
@@ -179,7 +201,7 @@ const SeaForecastView = ({ apiBaseUrl }) => {
                         <div className="d-flex justify-content-between align-items-center">
                           <span className="small">UV Index:</span>
                           <Badge bg={getUvSeverityColor(forecast.elements.uv_index?.value)}>
-                            {getUvDisplayText(forecast.elements.uv_index)}
+                            {formatUvDisplay(forecast.elements.uv_index)}
                           </Badge>
                         </div>
                       </Col>
