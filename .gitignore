@@ -188,3 +188,23 @@ test_fixes.py
 test_kalman_local.py
 package-lock.json
 package.json
+# ===== CRITICAL: Environment and Secrets Protection =====
+# NEVER commit environment files or any file containing credentials
+backend/.env
+backend/.env-prod
+backend/.env.*.local
+.env
+.env-prod
+.env.local
+
+# ===== AWS & Credentials =====
+# Never commit AWS credentials or API keys
+*.pem
+*.key
+*.p8
+credentials
+~/.aws/credentials
+
+# ===== Local Secrets Backup =====
+sealevel-secrets-backup/
+secrets-backup/
