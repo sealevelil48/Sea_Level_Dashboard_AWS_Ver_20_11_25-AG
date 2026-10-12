@@ -7,11 +7,13 @@ import { useFilters } from '../../hooks/useFilters';
 import { useStations } from '../../hooks/useStations';
 import { useChartJsConfig } from '../../hooks/useChartJsConfig';
 import { useFavorites } from '../../hooks/useFavorites';
+import { useCalibration } from '../../hooks/useCalibration';
 
 // Components
 import ErrorBoundary from '../ErrorBoundary';
 import DashboardHeader from './DashboardHeader';
 import DashboardFilters from './DashboardFilters';
+import CalibrationActionBar from './CalibrationActionBar';
 import SeaLevelChart from './SeaLevelChart';
 import DashboardMap from './DashboardMap';
 import WarningsCard from '../WarningsCard';
@@ -54,6 +56,7 @@ function Dashboard() {
     loading: _stationsLoading
   } = useStations();
   const { favorites, addFavorite, removeFavorite, isFavorite } = useFavorites();
+  const calibrationHook = useCalibration({ updateFilter, filterValues, selectedStations });
 
   // Local state
   const [activeTab, setActiveTab] = useState('graph');
@@ -636,7 +639,8 @@ function Dashboard() {
     selectedStations,
     selectedPoints,
     isFullscreen: isGraphFullscreen,
-    isMobile
+    isMobile,
+    calibrationPreviewData: filters.calibrationPreviewData,
   });
 
   // Point selection handlers
@@ -865,6 +869,7 @@ function Dashboard() {
                 isMobile={isMobile}
                 filtersOpen={filtersOpen}
                 setFiltersOpen={setFiltersOpen}
+                calibrationHook={calibrationHook}
               />
             </Col>
 
@@ -1425,6 +1430,17 @@ function Dashboard() {
           )}
         </footer>
       </div>
+
+      {/* Calibration action bar — floats at bottom when a preview is loaded */}
+      <CalibrationActionBar
+        isVisible={filters.calibrationMode && !!filters.calibrationPreviewData}
+        offset={filters.calibrationOffset}
+        station={calibrationHook.targetStation || ''}
+        isCommitting={calibrationHook.isCommitting}
+        commitResult={calibrationHook.commitResult}
+        onConfirm={calibrationHook.commitCalibration}
+        onCancel={calibrationHook.cancelCalibration}
+      />
     </ErrorBoundary>
   );
 }

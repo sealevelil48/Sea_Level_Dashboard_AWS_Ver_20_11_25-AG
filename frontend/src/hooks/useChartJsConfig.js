@@ -142,7 +142,8 @@ export const useChartJsConfig = ({
   selectedStations,
   selectedPoints,
   isFullscreen, // eslint-disable-line no-unused-vars
-  isMobile // eslint-disable-line no-unused-vars
+  isMobile, // eslint-disable-line no-unused-vars
+  calibrationPreviewData, // optional — calibration correction preview overlay
 }) => {
   const chartData = useMemo(() => {
     const datasets = [];
@@ -488,6 +489,63 @@ export const useChartJsConfig = ({
       }
     }
 
+    // Calibration correction preview overlay (mint dashed + optional amber reference)
+    if (
+      calibrationPreviewData &&
+      filters.calibrationMode &&
+      Array.isArray(calibrationPreviewData.data) &&
+      calibrationPreviewData.data.length > 0
+    ) {
+      const {
+        data: previewRows,
+        reference_data: refRows,
+        station: calStation,
+        offset_applied: calOffset,
+      } = calibrationPreviewData;
+
+      // Corrected line — mint green dashed
+      const correctedPoints = previewRows
+        .filter(r => r.corrected_value != null && !isNaN(r.corrected_value))
+        .map(r => ({ x: new Date(r.Tab_DateTime), y: r.corrected_value }));
+
+      if (correctedPoints.length > 0) {
+        const offsetLabel = calOffset >= 0 ? `+${calOffset}` : `${calOffset}`;
+        datasets.push({
+          label: `${calStation} Corrected (${offsetLabel}m)`,
+          data: correctedPoints,
+          borderColor: '#00ff99',
+          backgroundColor: '#00ff99',
+          borderWidth: 2,
+          borderDash: [8, 4],
+          pointRadius: 0,
+          tension: 0.4,
+          fill: false,
+        });
+      }
+
+      // Reference station overlay — amber dashed (only when a reference was requested)
+      if (Array.isArray(refRows) && refRows.length > 0) {
+        const refStation = refRows[0]?.Station || 'Reference';
+        const refPoints = refRows
+          .filter(r => r.value != null && !isNaN(r.value))
+          .map(r => ({ x: new Date(r.Tab_DateTime), y: r.value }));
+
+        if (refPoints.length > 0) {
+          datasets.push({
+            label: `${refStation} (Reference)`,
+            data: refPoints,
+            borderColor: '#ff9900',
+            backgroundColor: '#ff9900',
+            borderWidth: 1.5,
+            borderDash: [3, 3],
+            pointRadius: 0,
+            tension: 0.4,
+            fill: false,
+          });
+        }
+      }
+    }
+
     // Add selected points highlight
     if (selectedPoints && selectedPoints.length > 0) {
       const selectedData = selectedPoints.map(point => ({
@@ -537,7 +595,7 @@ export const useChartJsConfig = ({
     }
 
     return { datasets };
-  }, [graphData, predictions, filters, selectedStations, selectedPoints]);
+  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData]);
 
   return chartData;
 };

@@ -8,7 +8,14 @@ const defaultFilters = {
   analysisType: 'none',
   showAnomalies: false,
   predictionModels: [],
-  forecastHours: 72
+  forecastHours: 72,
+  // Calibration correction state
+  calibrationMode: false,          // toggle — panel visible and active
+  calibrationStart: null,          // string | null — full ISO-8601 datetime, e.g. "2026-10-08T15:13"
+  calibrationEnd: null,            // string | null
+  calibrationOffset: 0.0,          // metres, float
+  calibrationReference: 'none',   // 'none' | 'Ashdod' | 'Ashkelon'
+  calibrationPreviewData: null,   // API response or null
 };
 
 export const useFilters = () => {
@@ -23,15 +30,22 @@ export const useFilters = () => {
       return `${year}-${month}-${day}`;
     };
 
+    const startDateStr = formatDate(filters.startDate);
+    const endDateStr = formatDate(filters.endDate);
     return {
-      startDate: formatDate(filters.startDate),
-      endDate: formatDate(filters.endDate),
+      startDate: startDateStr,
+      endDate: endDateStr,
       dataType: filters.dataType,
       showAnomalies: filters.showAnomalies,
       trendline: filters.trendline,
       analysisType: filters.analysisType,
       predictionModels: filters.predictionModels,
-      forecastHours: filters.forecastHours
+      forecastHours: filters.forecastHours,
+      // Calibration — full ISO timestamps for sub-minute precision in SQL
+      calibrationStart: filters.calibrationStart || `${startDateStr}T00:00`,
+      calibrationEnd: filters.calibrationEnd || `${endDateStr}T23:59`,
+      calibrationOffset: filters.calibrationOffset,
+      calibrationReference: filters.calibrationReference,
     };
   }, [filters]);
 

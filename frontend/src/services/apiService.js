@@ -339,6 +339,49 @@ class ApiService {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Calibration correction endpoints
+  // -------------------------------------------------------------------------
+
+  async previewCalibration(params) {
+    // params: { station, start_datetime, end_datetime, offset, reference_station? }
+    try {
+      return await this.request('/api/calibration/preview', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      });
+    } catch (error) {
+      console.error('Error previewing calibration:', error);
+      return null;
+    }
+  }
+
+  async commitCalibration(params) {
+    // params: { station, start_datetime, end_datetime, offset }
+    try {
+      return await this.request('/api/calibration/commit', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      });
+    } catch (error) {
+      console.error('Error committing calibration:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async suggestCalibration(params) {
+    // params: { station, start_datetime, end_datetime }
+    try {
+      return await this.request('/api/calibration/suggest', {
+        method: 'POST',
+        body: JSON.stringify(params),
+      });
+    } catch (error) {
+      console.error('Error suggesting calibration:', error);
+      return null;
+    }
+  }
+
   // Cancel all active requests
   cancelAllRequests() {
     this.activeRequests.forEach(controller => controller.abort());

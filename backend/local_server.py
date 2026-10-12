@@ -18,12 +18,11 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi import HTTPException
 from dotenv import load_dotenv
 
 # Setup paths
@@ -127,6 +126,19 @@ except ImportError as e:
     get_sea_forecast_handler = dummy_handler
     get_ims_warnings_handler = dummy_handler
     get_analytics_handler = dummy_handler
+
+try:
+    from lambdas.calibration.main import (
+        lambda_handler_preview as calibration_preview_handler,
+        lambda_handler_commit  as calibration_commit_handler,
+        lambda_handler_suggest as calibration_suggest_handler,
+    )
+    logger.info("[OK] Calibration handlers imported successfully")
+except ImportError as e:
+    logger.warning(f"[WARN] Calibration handlers not available: {e}")
+    calibration_preview_handler = dummy_handler
+    calibration_commit_handler  = dummy_handler
+    calibration_suggest_handler = dummy_handler
 
 # Global variable for frontend process
 frontend_process: Optional[subprocess.Popen] = None
@@ -1404,6 +1416,42 @@ async def get_sea_forecast_direct():
             content={"error": str(e), "locations": []},
             status_code=500
         )
+
+@app.post("/api/calibration/preview")
+async def calibration_preview(request: Request):
+    """Preview calibration offset in-memory (no DB writes)."""
+    try:
+        body = await request.json()
+        event = {"httpMethod": "POST", "path": "/calibration/preview", "body": body}
+        return lambda_to_fastapi_response(calibration_preview_handler(event, None))
+    except Exception as e:
+        logger.error(f"Error in calibration_preview: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/calibration/commit")
+async def calibration_commit(request: Request):
+    """Commit calibration offset additively to the database."""
+    try:
+        body = await request.json()
+        event = {"httpMethod": "POST", "path": "/calibration/commit", "body": body}
+        return lambda_to_fastapi_response(calibration_commit_handler(event, None))
+    except Exception as e:
+        logger.error(f"Error in calibration_commit: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/api/calibration/suggest")
+async def calibration_suggest(request: Request):
+    """Auto-detect the largest step-change and suggest a corrective offset."""
+    try:
+        body = await request.json()
+        event = {"httpMethod": "POST", "path": "/calibration/suggest", "body": body}
+        return lambda_to_fastapi_response(calibration_suggest_handler(event, None))
+    except Exception as e:
+        logger.error(f"Error in calibration_suggest: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 @app.get("/mapframe")
 async def serve_mapframe(end_date: Optional[str] = None):
