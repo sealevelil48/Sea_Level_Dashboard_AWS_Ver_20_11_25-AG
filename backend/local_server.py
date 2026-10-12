@@ -18,12 +18,11 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
-from fastapi import HTTPException
 from dotenv import load_dotenv
 
 # Setup paths
@@ -127,6 +126,19 @@ except ImportError as e:
     get_sea_forecast_handler = dummy_handler
     get_ims_warnings_handler = dummy_handler
     get_analytics_handler = dummy_handler
+
+try:
+    from lambdas.calibration.main import (
+        lambda_handler_preview as calibration_preview_handler,
+        lambda_handler_commit  as calibration_commit_handler,
+        lambda_handler_suggest as calibration_suggest_handler,
+    )
+    logger.info("[OK] Calibration handlers imported successfully")
+except ImportError as e:
+    logger.warning(f"[WARN] Calibration handlers not available: {e}")
+    calibration_preview_handler = dummy_handler
+    calibration_commit_handler  = dummy_handler
+    calibration_suggest_handler = dummy_handler
 
 # Global variable for frontend process
 frontend_process: Optional[subprocess.Popen] = None
@@ -1404,6 +1416,104 @@ async def get_sea_forecast_direct():
             content={"error": str(e), "locations": []},
             status_code=500
         )
+
+# ---------------------------------------------------------------------------
+# Calibration proxy routes
+#
+# Two-layer security model:
+#
+#   Layer 1 — FastAPI (caller-facing):
+#     The browser sends X-Calibration-Access: <CALIBRATION_ACCESS_SECRET>.
+#     This is the credential operators configure in their dashboard .env.
+#     It prevents any anonymous HTTP caller from reaching the endpoints.
+#     Validated by _require_calibration_access() below using
+#     secrets.compare_digest to avoid timing side-channels.
+#
+#   Layer 2 — Lambda handler (internal):
+#     The proxy injects X-Calibration-Key: <CALIBRATION_API_KEY> into the
+#     lambda event.  This key never leaves the server and never appears in
+#     the browser bundle or network traffic.
+#
+# CALIBRATION_ACCESS_SECRET  — set in .env; sent by the dashboard browser.
+# CALIBRATION_API_KEY        — set in .env; never sent to the browser.
+# ---------------------------------------------------------------------------
+import secrets as _secrets_mod  # stdlib secrets, aliased to avoid name clash
+
+_CALIBRATION_API_KEY_SERVER    = os.getenv("CALIBRATION_API_KEY", "")
+_CALIBRATION_ACCESS_SECRET     = os.getenv("CALIBRATION_ACCESS_SECRET", "")
+
+def _require_calibration_access(request: Request):
+    """
+    FastAPI-layer access check. Validates the X-Calibration-Access header
+    sent by the browser using constant-time comparison.
+    Returns a JSONResponse on failure, or None on success.
+    """
+    from fastapi.responses import JSONResponse
+    if not _CALIBRATION_ACCESS_SECRET:
+        logger.error("[SECURITY] CALIBRATION_ACCESS_SECRET is not set — blocking all calibration access")
+        return JSONResponse(content={"error": "Calibration access not configured"}, status_code=503)
+    token = request.headers.get("x-calibration-access", "")
+    if not token or not _secrets_mod.compare_digest(token, _CALIBRATION_ACCESS_SECRET):
+        logger.warning("[SECURITY] Calibration access denied: invalid or missing X-Calibration-Access header")
+        return JSONResponse(content={"error": "Unauthorized"}, status_code=401)
+    return None
+
+def _calibration_event(path, body):
+    """Build a lambda event with the internal server-side proxy key injected."""
+    return {
+        "httpMethod": "POST",
+        "path": path,
+        "headers": {"x-calibration-key": _CALIBRATION_API_KEY_SERVER},
+        "body": body,
+    }
+
+@app.post("/api/calibration/preview")
+async def calibration_preview(request: Request):
+    """Preview calibration offset in-memory (no DB writes). Requires X-Calibration-Access header."""
+    denied = _require_calibration_access(request)
+    if denied:
+        return denied
+    try:
+        body = await request.json()
+        return lambda_to_fastapi_response(
+            calibration_preview_handler(_calibration_event("/calibration/preview", body), None)
+        )
+    except Exception as e:
+        logger.error(f"Error in calibration_preview: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
+
+@app.post("/api/calibration/commit")
+async def calibration_commit(request: Request):
+    """Commit calibration offset additively to the database. Requires X-Calibration-Access header."""
+    denied = _require_calibration_access(request)
+    if denied:
+        return denied
+    try:
+        body = await request.json()
+        return lambda_to_fastapi_response(
+            calibration_commit_handler(_calibration_event("/calibration/commit", body), None)
+        )
+    except Exception as e:
+        logger.error(f"Error in calibration_commit: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
+
+@app.post("/api/calibration/suggest")
+async def calibration_suggest(request: Request):
+    """Auto-detect the largest step-change and suggest a corrective offset. Requires X-Calibration-Access header."""
+    denied = _require_calibration_access(request)
+    if denied:
+        return denied
+    try:
+        body = await request.json()
+        return lambda_to_fastapi_response(
+            calibration_suggest_handler(_calibration_event("/calibration/suggest", body), None)
+        )
+    except Exception as e:
+        logger.error(f"Error in calibration_suggest: {e}")
+        from fastapi.responses import JSONResponse
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 @app.get("/mapframe")
 async def serve_mapframe(end_date: Optional[str] = None):

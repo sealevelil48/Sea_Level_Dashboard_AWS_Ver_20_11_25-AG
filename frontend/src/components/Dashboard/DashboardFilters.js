@@ -19,7 +19,8 @@ const DashboardFilters = ({
   onExportData,
   isMobile,
   filtersOpen,
-  setFiltersOpen
+  setFiltersOpen,
+  calibrationHook,
 }) => {
   return (
     <>
@@ -132,6 +133,120 @@ const DashboardFilters = ({
                   ]}
                 />
               </Form.Group>
+
+              {/* ── Calibration Correction ── */}
+              <Form.Group className="mb-2">
+                <Form.Check
+                  type="checkbox"
+                  id="calibration-mode-check"
+                  label="Calibration Correction"
+                  checked={filters.calibrationMode || false}
+                  onChange={(e) => onFilterChange('calibrationMode', e.target.checked)}
+                  className="small"
+                />
+                <small className="text-muted d-block" style={{ fontSize: '0.7rem' }}>
+                  Non-destructive offset correction
+                </small>
+              </Form.Group>
+
+              {filters.calibrationMode && calibrationHook && (
+                <div style={{
+                  backgroundColor: '#0c1c35',
+                  padding: '8px',
+                  borderRadius: '4px',
+                  border: '1px solid #2a3f5f',
+                  marginBottom: '8px',
+                }}>
+                  <Form.Label className="small mb-1" style={{ color: '#00ff99', fontWeight: 600 }}>
+                    Correction Window
+                  </Form.Label>
+
+                  <Form.Group className="mb-1">
+                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      Start (exact time)
+                    </Form.Label>
+                    <Form.Control
+                      type="datetime-local"
+                      size="sm"
+                      value={filters.calibrationStart || ''}
+                      onChange={(e) => onFilterChange('calibrationStart', e.target.value || null)}
+                      style={{ fontSize: '0.75rem' }}
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-1">
+                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      End (exact time)
+                    </Form.Label>
+                    <Form.Control
+                      type="datetime-local"
+                      size="sm"
+                      value={filters.calibrationEnd || ''}
+                      onChange={(e) => onFilterChange('calibrationEnd', e.target.value || null)}
+                      style={{ fontSize: '0.75rem' }}
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-2">
+                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      Offset (metres)
+                    </Form.Label>
+                    <Form.Control
+                      type="number"
+                      size="sm"
+                      step="0.001"
+                      min="-10"
+                      max="10"
+                      value={filters.calibrationOffset ?? 0}
+                      onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value) || 0)}
+                      style={{ fontSize: '0.75rem' }}
+                    />
+                  </Form.Group>
+
+                  <Form.Group className="mb-2">
+                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      Compare with Station
+                    </Form.Label>
+                    <CustomDropdown
+                      value={filters.calibrationReference || 'none'}
+                      onChange={(value) => onFilterChange('calibrationReference', value)}
+                      options={[
+                        { value: 'none',      label: 'None' },
+                        { value: 'Ashdod',    label: 'Ashdod' },
+                        { value: 'Ashkelon',  label: 'Ashkelon' },
+                      ]}
+                    />
+                  </Form.Group>
+
+                  <Button
+                    variant="outline-info"
+                    size="sm"
+                    className="w-100 mb-1"
+                    style={{ fontSize: '0.75rem' }}
+                    onClick={calibrationHook.fetchSuggest}
+                    disabled={calibrationHook.isLoadingSuggest}
+                  >
+                    {calibrationHook.isLoadingSuggest ? 'Detecting…' : '⚡ Auto-Suggest Offset'}
+                  </Button>
+
+                  <Button
+                    variant="outline-warning"
+                    size="sm"
+                    className="w-100"
+                    style={{ fontSize: '0.75rem' }}
+                    onClick={calibrationHook.fetchPreview}
+                    disabled={calibrationHook.isLoadingPreview}
+                  >
+                    {calibrationHook.isLoadingPreview ? 'Loading…' : '👁 Preview Correction'}
+                  </Button>
+
+                  {calibrationHook.error && (
+                    <small className="text-danger d-block mt-1" style={{ fontSize: '0.7rem' }}>
+                      {calibrationHook.error}
+                    </small>
+                  )}
+                </div>
+              )}
 
               {/* Show Anomalies */}
               <Form.Group className="mb-2">

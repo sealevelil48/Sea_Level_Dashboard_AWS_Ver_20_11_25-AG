@@ -339,6 +339,64 @@ class ApiService {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Calibration correction endpoints
+  //
+  // Two-layer auth model:
+  //   Browser → FastAPI:   X-Calibration-Access header (REACT_APP_CALIBRATION_ACCESS)
+  //   FastAPI → Lambda:    X-Calibration-Key injected server-side (never in browser)
+  //
+  // Set REACT_APP_CALIBRATION_ACCESS in the frontend .env to the value of
+  // CALIBRATION_ACCESS_SECRET on the server.
+  // -------------------------------------------------------------------------
+
+  _calibrationAccessHeaders() {
+    const access = process.env.REACT_APP_CALIBRATION_ACCESS || '';
+    return access ? { 'X-Calibration-Access': access } : {};
+  }
+
+  async previewCalibration(params) {
+    // params: { station, start_datetime, end_datetime, offset, reference_station? }
+    try {
+      return await this.request('/api/calibration/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
+        body: JSON.stringify(params),
+      });
+    } catch (error) {
+      console.error('Error previewing calibration:', error);
+      return null;
+    }
+  }
+
+  async commitCalibration(params) {
+    // params: { station, start_datetime, end_datetime, offset }
+    try {
+      return await this.request('/api/calibration/commit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
+        body: JSON.stringify(params),
+      });
+    } catch (error) {
+      console.error('Error committing calibration:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async suggestCalibration(params) {
+    // params: { station, start_datetime, end_datetime }
+    try {
+      return await this.request('/api/calibration/suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
+        body: JSON.stringify(params),
+      });
+    } catch (error) {
+      console.error('Error suggesting calibration:', error);
+      return null;
+    }
+  }
+
   // Cancel all active requests
   cancelAllRequests() {
     this.activeRequests.forEach(controller => controller.abort());

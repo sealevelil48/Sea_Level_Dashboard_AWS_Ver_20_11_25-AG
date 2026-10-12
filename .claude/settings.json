@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m 'feat: add non-destructive calibration correction feature \\(backend endpoints, SQL migration, frontend UI and chart overlay\\) *)",
+      "Bash(git commit -m 'security: harden calibration endpoints \\(auth, input validation, allowlists\\) *)",
+      "Bash(del /f \"start_production.bat\" \"start_backend.bat\" \"start_dashboard.bat\" \"start_for_clients.bat\" \"setup_govmap_domain.bat\" \"restart_backend.bat\")"
+    ]
+  }
+}

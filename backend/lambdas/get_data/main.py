@@ -33,6 +33,22 @@ except ImportError as e:
     print(f"[WARNING] Southern Baseline Rules not available: {e}")
     BASELINE_RULES_AVAILABLE = False
 
+def _calibration_column_exists():
+    """Check once at startup whether the Calibration_Offset column is present."""
+    if not DATABASE_AVAILABLE or not engine:
+        return False
+    try:
+        with engine.connect() as conn:
+            r = conn.execute(text(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name='Monitors_info2' AND column_name='Calibration_Offset'"
+            ))
+            return r.fetchone() is not None
+    except Exception:
+        return False
+
+CALIBRATION_OFFSET_EXISTS = _calibration_column_exists()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -255,16 +271,24 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
     # ============================================
     else:
         if agg_level == 'raw':
-            sql_query = '''
+            # Apply stored calibration offset at query time (non-destructive correction).
+            # Falls back to raw value if the migration hasn't been run yet.
+            depth_expr = (
+                '(CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
+                ' + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0))'
+                if CALIBRATION_OFFSET_EXISTS
+                else 'CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
+            )
+            sql_query = f"""
                 SELECT
                     m."Tab_DateTime",
                     l."Station",
-                    CAST(m."Tab_Value_mDepthC1" AS FLOAT) as "Tab_Value_mDepthC1",
+                    {depth_expr} as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m"
                 FROM "Monitors_info2" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
-            '''
+            """
         elif agg_level == '5min':
             sql_query = '''
                 SELECT
