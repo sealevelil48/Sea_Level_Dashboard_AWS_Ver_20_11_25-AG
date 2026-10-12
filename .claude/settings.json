@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit -m 'feat: add non-destructive calibration correction feature \\(backend endpoints, SQL migration, frontend UI and chart overlay\\) *)",
+      "Bash(git commit -m 'security: harden calibration endpoints \\(auth, input validation, allowlists\\) *)"
+    ]
+  }
+}

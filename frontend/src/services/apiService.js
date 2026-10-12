@@ -341,15 +341,26 @@ class ApiService {
 
   // -------------------------------------------------------------------------
   // Calibration correction endpoints
-  // The API key is injected server-side by the FastAPI proxy routes —
-  // the browser never sends or stores the key.
+  //
+  // Two-layer auth model:
+  //   Browser → FastAPI:   X-Calibration-Access header (REACT_APP_CALIBRATION_ACCESS)
+  //   FastAPI → Lambda:    X-Calibration-Key injected server-side (never in browser)
+  //
+  // Set REACT_APP_CALIBRATION_ACCESS in the frontend .env to the value of
+  // CALIBRATION_ACCESS_SECRET on the server.
   // -------------------------------------------------------------------------
+
+  _calibrationAccessHeaders() {
+    const access = process.env.REACT_APP_CALIBRATION_ACCESS || '';
+    return access ? { 'X-Calibration-Access': access } : {};
+  }
 
   async previewCalibration(params) {
     // params: { station, start_datetime, end_datetime, offset, reference_station? }
     try {
       return await this.request('/api/calibration/preview', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
         body: JSON.stringify(params),
       });
     } catch (error) {
@@ -363,6 +374,7 @@ class ApiService {
     try {
       return await this.request('/api/calibration/commit', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
         body: JSON.stringify(params),
       });
     } catch (error) {
@@ -376,6 +388,7 @@ class ApiService {
     try {
       return await this.request('/api/calibration/suggest', {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
         body: JSON.stringify(params),
       });
     } catch (error) {

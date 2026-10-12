@@ -92,16 +92,22 @@ def _refresh_station_allowlist():
                 rejected.append(name)
 
         if rejected:
+            # Sanitize before logging: repr() escapes control chars/newlines;
+            # truncate each name and cap the list to prevent log flooding.
+            safe_rejected = [repr(n)[:80] for n in list(rejected)[:20]]
             logger.warning(
-                f"[SECURITY] DB station allowlist: rejected {len(rejected)} name(s) "
-                f"that failed format check: {rejected}"
+                "[SECURITY] DB station allowlist: rejected %d name(s) that failed "
+                "format check: %s",
+                len(rejected), safe_rejected
             )
 
         new_stations = set(admitted) - _STATIC_ALLOWED_STATIONS
         if new_stations:
+            safe_new = [repr(n)[:80] for n in sorted(new_stations)[:20]]
             logger.warning(
-                f"[SECURITY] DB station allowlist: adding {len(new_stations)} name(s) "
-                f"beyond the static set (review these): {sorted(new_stations)}"
+                "[SECURITY] DB station allowlist: adding %d name(s) beyond the static "
+                "set (review these): %s",
+                len(new_stations), safe_new
             )
 
         candidate_set = _STATIC_ALLOWED_STATIONS | set(admitted)
