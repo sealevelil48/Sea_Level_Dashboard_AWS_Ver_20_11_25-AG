@@ -1419,39 +1419,55 @@ async def get_sea_forecast_direct():
 
 @app.post("/api/calibration/preview")
 async def calibration_preview(request: Request):
-    """Preview calibration offset in-memory (no DB writes)."""
+    """Preview calibration offset in-memory (no DB writes). Requires X-Calibration-Key header."""
     try:
         body = await request.json()
-        event = {"httpMethod": "POST", "path": "/calibration/preview", "body": body}
+        # Forward auth header into the lambda event so the handler can validate it
+        event = {
+            "httpMethod": "POST",
+            "path": "/calibration/preview",
+            "headers": dict(request.headers),
+            "body": body,
+        }
         return lambda_to_fastapi_response(calibration_preview_handler(event, None))
     except Exception as e:
         logger.error(f"Error in calibration_preview: {e}")
         from fastapi.responses import JSONResponse
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 @app.post("/api/calibration/commit")
 async def calibration_commit(request: Request):
-    """Commit calibration offset additively to the database."""
+    """Commit calibration offset additively to the database. Requires X-Calibration-Key header."""
     try:
         body = await request.json()
-        event = {"httpMethod": "POST", "path": "/calibration/commit", "body": body}
+        event = {
+            "httpMethod": "POST",
+            "path": "/calibration/commit",
+            "headers": dict(request.headers),
+            "body": body,
+        }
         return lambda_to_fastapi_response(calibration_commit_handler(event, None))
     except Exception as e:
         logger.error(f"Error in calibration_commit: {e}")
         from fastapi.responses import JSONResponse
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 @app.post("/api/calibration/suggest")
 async def calibration_suggest(request: Request):
-    """Auto-detect the largest step-change and suggest a corrective offset."""
+    """Auto-detect the largest step-change and suggest a corrective offset. Requires X-Calibration-Key header."""
     try:
         body = await request.json()
-        event = {"httpMethod": "POST", "path": "/calibration/suggest", "body": body}
+        event = {
+            "httpMethod": "POST",
+            "path": "/calibration/suggest",
+            "headers": dict(request.headers),
+            "body": body,
+        }
         return lambda_to_fastapi_response(calibration_suggest_handler(event, None))
     except Exception as e:
         logger.error(f"Error in calibration_suggest: {e}")
         from fastapi.responses import JSONResponse
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 @app.get("/mapframe")
 async def serve_mapframe(end_date: Optional[str] = None):
