@@ -341,20 +341,15 @@ class ApiService {
 
   // -------------------------------------------------------------------------
   // Calibration correction endpoints
-  // All three require X-Calibration-Key — set REACT_APP_CALIBRATION_KEY in .env
+  // The API key is injected server-side by the FastAPI proxy routes —
+  // the browser never sends or stores the key.
   // -------------------------------------------------------------------------
-
-  _calibrationHeaders() {
-    const key = process.env.REACT_APP_CALIBRATION_KEY || '';
-    return key ? { 'X-Calibration-Key': key } : {};
-  }
 
   async previewCalibration(params) {
     // params: { station, start_datetime, end_datetime, offset, reference_station? }
     try {
       return await this.request('/api/calibration/preview', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this._calibrationHeaders() },
         body: JSON.stringify(params),
       });
     } catch (error) {
@@ -368,7 +363,6 @@ class ApiService {
     try {
       return await this.request('/api/calibration/commit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this._calibrationHeaders() },
         body: JSON.stringify(params),
       });
     } catch (error) {
@@ -382,7 +376,6 @@ class ApiService {
     try {
       return await this.request('/api/calibration/suggest', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this._calibrationHeaders() },
         body: JSON.stringify(params),
       });
     } catch (error) {

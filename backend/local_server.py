@@ -1417,19 +1417,30 @@ async def get_sea_forecast_direct():
             status_code=500
         )
 
+# The calibration routes act as a server-side proxy: they inject the
+# CALIBRATION_API_KEY from the server environment into the lambda event
+# themselves.  The browser never sees or sends this key — REACT_APP_CALIBRATION_KEY
+# is no longer needed in the frontend .env.
+_CALIBRATION_API_KEY_SERVER = os.getenv("CALIBRATION_API_KEY", "")
+
+def _calibration_event(path, body):
+    """Build a lambda event with the server-side key injected."""
+    return {
+        "httpMethod": "POST",
+        "path": path,
+        # Inject the key server-side; the browser never touches it.
+        "headers": {"x-calibration-key": _CALIBRATION_API_KEY_SERVER},
+        "body": body,
+    }
+
 @app.post("/api/calibration/preview")
 async def calibration_preview(request: Request):
-    """Preview calibration offset in-memory (no DB writes). Requires X-Calibration-Key header."""
+    """Preview calibration offset in-memory (no DB writes)."""
     try:
         body = await request.json()
-        # Forward auth header into the lambda event so the handler can validate it
-        event = {
-            "httpMethod": "POST",
-            "path": "/calibration/preview",
-            "headers": dict(request.headers),
-            "body": body,
-        }
-        return lambda_to_fastapi_response(calibration_preview_handler(event, None))
+        return lambda_to_fastapi_response(
+            calibration_preview_handler(_calibration_event("/calibration/preview", body), None)
+        )
     except Exception as e:
         logger.error(f"Error in calibration_preview: {e}")
         from fastapi.responses import JSONResponse
@@ -1437,16 +1448,12 @@ async def calibration_preview(request: Request):
 
 @app.post("/api/calibration/commit")
 async def calibration_commit(request: Request):
-    """Commit calibration offset additively to the database. Requires X-Calibration-Key header."""
+    """Commit calibration offset additively to the database."""
     try:
         body = await request.json()
-        event = {
-            "httpMethod": "POST",
-            "path": "/calibration/commit",
-            "headers": dict(request.headers),
-            "body": body,
-        }
-        return lambda_to_fastapi_response(calibration_commit_handler(event, None))
+        return lambda_to_fastapi_response(
+            calibration_commit_handler(_calibration_event("/calibration/commit", body), None)
+        )
     except Exception as e:
         logger.error(f"Error in calibration_commit: {e}")
         from fastapi.responses import JSONResponse
@@ -1454,16 +1461,12 @@ async def calibration_commit(request: Request):
 
 @app.post("/api/calibration/suggest")
 async def calibration_suggest(request: Request):
-    """Auto-detect the largest step-change and suggest a corrective offset. Requires X-Calibration-Key header."""
+    """Auto-detect the largest step-change and suggest a corrective offset."""
     try:
         body = await request.json()
-        event = {
-            "httpMethod": "POST",
-            "path": "/calibration/suggest",
-            "headers": dict(request.headers),
-            "body": body,
-        }
-        return lambda_to_fastapi_response(calibration_suggest_handler(event, None))
+        return lambda_to_fastapi_response(
+            calibration_suggest_handler(_calibration_event("/calibration/suggest", body), None)
+        )
     except Exception as e:
         logger.error(f"Error in calibration_suggest: {e}")
         from fastapi.responses import JSONResponse

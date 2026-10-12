@@ -47,25 +47,74 @@ CORS_HEADERS = {
 
 # ---------------------------------------------------------------------------
 # Security: station allowlist
-# The static fallback matches FALLBACK_STATIONS in the frontend.  When the DB
-# is available the list is also refreshed at import time from Locations.
+#
+# The static set is the sole authoritative list — it matches FALLBACK_STATIONS
+# in the frontend and is never overwritten.
+#
+# The DB refresh (opt-in, controlled by CALIBRATION_ALLOW_DB_STATIONS=true)
+# may ADD stations, but only after each candidate passes the same format regex
+# used in _validate_station.  Any name that fails the regex is discarded and
+# logged as an anomaly.  The total set is capped at _MAX_STATION_COUNT.
 # ---------------------------------------------------------------------------
+_STATION_NAME_RE = re.compile(r'^[a-zA-Z0-9 \-_]+$')
+_MAX_STATION_COUNT = 50
+
 _STATIC_ALLOWED_STATIONS = frozenset({
     "Acre", "Ashdod", "Ashkelon", "Eilat", "Haifa", "Yafo"
 })
 _ALLOWED_STATIONS = set(_STATIC_ALLOWED_STATIONS)
 
 def _refresh_station_allowlist():
-    """Load the full set of station names from the Locations table."""
+    """
+    Optionally expand the allowlist from the Locations table.
+    Only runs when CALIBRATION_ALLOW_DB_STATIONS=true is set explicitly.
+    Each candidate name is validated against _STATION_NAME_RE before
+    being admitted; rejects are logged as anomalies.
+    """
+    if os.getenv("CALIBRATION_ALLOW_DB_STATIONS", "false").lower() != "true":
+        return
     if not DATABASE_AVAILABLE or not engine:
         return
     try:
         with engine.connect() as conn:
             result = conn.execute(text('SELECT DISTINCT "Station" FROM "Locations"'))
-            names = {row[0] for row in result.fetchall() if row[0]}
-            if names:
-                _ALLOWED_STATIONS.update(names)
-                logger.info(f"[OK] Station allowlist refreshed: {sorted(_ALLOWED_STATIONS)}")
+            raw_names = {row[0] for row in result.fetchall() if row[0]}
+
+        admitted, rejected = [], []
+        for name in raw_names:
+            if (
+                isinstance(name, str)
+                and _STATION_NAME_RE.match(name)
+                and len(name) <= 50
+            ):
+                admitted.append(name)
+            else:
+                rejected.append(name)
+
+        if rejected:
+            logger.warning(
+                f"[SECURITY] DB station allowlist: rejected {len(rejected)} name(s) "
+                f"that failed format check: {rejected}"
+            )
+
+        new_stations = set(admitted) - _STATIC_ALLOWED_STATIONS
+        if new_stations:
+            logger.warning(
+                f"[SECURITY] DB station allowlist: adding {len(new_stations)} name(s) "
+                f"beyond the static set (review these): {sorted(new_stations)}"
+            )
+
+        candidate_set = _STATIC_ALLOWED_STATIONS | set(admitted)
+        if len(candidate_set) > _MAX_STATION_COUNT:
+            logger.error(
+                f"[SECURITY] DB station allowlist exceeds cap ({_MAX_STATION_COUNT}); "
+                "using static list only"
+            )
+            return
+
+        _ALLOWED_STATIONS.update(set(admitted))
+        logger.info(f"[OK] Station allowlist refreshed: {sorted(_ALLOWED_STATIONS)}")
+
     except Exception as exc:
         logger.warning(f"[WARN] Could not refresh station allowlist: {exc}")
 
@@ -158,11 +207,15 @@ def _validate_datetime(dt_str, field_name):
     return dt, None
 
 def _validate_window(start_dt, end_dt):
-    """Ensure start < end and window <= MAX_WINDOW_DAYS."""
+    """
+    Ensure start < end and window <= MAX_WINDOW_DAYS.
+    Uses timedelta comparison directly (not delta.days) to avoid the
+    sub-day truncation bug where timedelta(730 days, 1 hour).days == 730.
+    """
     if start_dt >= end_dt:
         return _err(400, "start_datetime must be earlier than end_datetime")
-    delta = end_dt - start_dt
-    if delta.days > MAX_WINDOW_DAYS:
+    from datetime import timedelta
+    if (end_dt - start_dt) > timedelta(days=MAX_WINDOW_DAYS):
         return _err(400, f"Correction window cannot exceed {MAX_WINDOW_DAYS} days")
     return None
 
