@@ -34,13 +34,14 @@ if %errorLevel% neq 0 (
 )
 
 REM ────────────────────────────────────────────────
-REM STEP 3: Clean Slate - kill old node processes
+REM STEP 3: Clean Slate - kill old node and Python processes
 REM ────────────────────────────────────────────────
 echo.
-echo [3/6] Stopping any existing node/frontend processes...
+echo [3/6] Stopping any existing processes...
 taskkill /f /im node.exe 2>nul
+taskkill /f /im python.exe 2>nul
 timeout /t 2 /nobreak >nul
-echo [OK] Old node processes cleared
+echo [OK] Old processes cleared
 
 REM ────────────────────────────────────────────────
 REM STEP 4: Build Frontend
