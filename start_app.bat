@@ -46,12 +46,27 @@ REM ─────────────────────────�
 REM STEP 4: Build Frontend
 REM ────────────────────────────────────────────────
 echo.
-echo [4/6] Building frontend production bundle (this may take 2-3 minutes)...
+echo [4/6] Building frontend production bundle...
+echo   - Installing dependencies (if needed)
 echo   - Disabling source maps for faster loading
 echo   - Minifying JavaScript and CSS
 echo   - Optimizing assets
 echo.
 cd /d "%~dp0frontend"
+
+REM Install dependencies if node_modules doesn't exist or cross-env is missing
+if not exist "node_modules" (
+    echo Installing npm dependencies...
+    call npm install
+    if %ERRORLEVEL% NEQ 0 (
+        echo.
+        echo ERROR: npm install failed! Check your npm installation and internet connection.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
 call npm run build-govmap
 
 if %ERRORLEVEL% NEQ 0 (
