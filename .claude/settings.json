@@ -1,12 +1,5 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(git commit -m 'feat: add non-destructive calibration correction feature \\(backend endpoints, SQL migration, frontend UI and chart overlay\\) *)",
-      "Bash(git commit -m 'security: harden calibration endpoints \\(auth, input validation, allowlists\\) *)",
-      "Bash(del /f \"start_production.bat\" \"start_backend.bat\" \"start_dashboard.bat\" \"start_for_clients.bat\" \"setup_govmap_domain.bat\" \"restart_backend.bat\")",
-      "PowerShell(cd \"C:\\\\Users\\\\user01\\\\Desktop\\\\Ben\\\\Sea_Level_Dash\\\\Sea_Level_Dashboard_AWS_Ver_20_11_25-AG-main\"; $deleted = @\\(\"start_production.bat\", \"start_backend.bat\", \"start_dashboard.bat\", \"start_for_clients.bat\", \"setup_govmap_domain.bat\", \"restart_backend.bat\"\\); foreach \\($file in $deleted\\) { if \\(-not \\(Test-Path $file\\)\\) { Write-Output \"✓ Deleted: $file\" } else { Write-Output \"✗ Still exists: $file\" } })",
-      "Bash(git hash-object *)",
-      "Bash(git reset *)"
-    ]
+    "allow": []
   }
 }
