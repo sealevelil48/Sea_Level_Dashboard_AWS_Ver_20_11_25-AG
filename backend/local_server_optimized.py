@@ -21,6 +21,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 from datetime import datetime, timedelta
+from typing import Union
 from contextlib import asynccontextmanager
 from functools import wraps
 
@@ -1022,19 +1023,62 @@ def _calibration_event(path, body):
         "body": body,
     }
 
+def _validate_calibration_request(content_type: Optional[str], content_length: Optional[str]) -> Optional[JSONResponse]:
+    """Validate calibration request headers before JSON parsing."""
+    # Check Content-Type
+    if not content_type or "application/json" not in content_type:
+        logger.warning("[SECURITY] Calibration request rejected: invalid Content-Type")
+        return JSONResponse(content={"error": "Content-Type must be application/json"}, status_code=400)
+
+    # Check Content-Length (prevent unbounded uploads)
+    try:
+        if content_length:
+            length = int(content_length)
+            if length > 1048576:  # 1 MB limit
+                logger.warning(f"[SECURITY] Calibration request rejected: Content-Length {length} exceeds 1 MB limit")
+                return JSONResponse(content={"error": "Request body too large"}, status_code=413)
+    except (ValueError, TypeError):
+        logger.warning("[SECURITY] Calibration request rejected: invalid Content-Length")
+        return JSONResponse(content={"error": "Invalid Content-Length"}, status_code=400)
+
+    return None
+
 @app.post("/api/calibration/preview")
 async def calibration_preview(request: Request):
     """Preview calibration offset in-memory (no DB writes). Requires X-Calibration-Access header."""
     denied = _require_calibration_access(request)
     if denied:
         return denied
+
+    # Validate request headers
+    header_error = _validate_calibration_request(
+        request.headers.get("content-type"),
+        request.headers.get("content-length")
+    )
+    if header_error:
+        return header_error
+
     try:
         body = await request.json()
+    except json.JSONDecodeError:
+        logger.warning("[SECURITY] Calibration preview request rejected: invalid JSON")
+        return JSONResponse(content={"error": "Invalid JSON in request body"}, status_code=400)
+    except Exception as e:
+        if os.getenv('DEBUG'):
+            logger.debug(f"Calibration preview request parsing error: {type(e).__name__}", exc_info=True)
+        else:
+            logger.error("Calibration preview request failed")
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
+
+    try:
         return lambda_to_fastapi_response(
             calibration_preview_handler(_calibration_event("/calibration/preview", body), None)
         )
     except Exception as e:
-        logger.error(f"Error in calibration_preview: {e}")
+        if os.getenv('DEBUG'):
+            logger.debug(f"Calibration preview operation error: {type(e).__name__}", exc_info=True)
+        else:
+            logger.error("Calibration preview operation failed")
         return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 @app.post("/api/calibration/commit")
@@ -1043,13 +1087,36 @@ async def calibration_commit(request: Request):
     denied = _require_calibration_access(request)
     if denied:
         return denied
+
+    # Validate request headers
+    header_error = _validate_calibration_request(
+        request.headers.get("content-type"),
+        request.headers.get("content-length")
+    )
+    if header_error:
+        return header_error
+
     try:
         body = await request.json()
+    except json.JSONDecodeError:
+        logger.warning("[SECURITY] Calibration commit request rejected: invalid JSON")
+        return JSONResponse(content={"error": "Invalid JSON in request body"}, status_code=400)
+    except Exception as e:
+        if os.getenv('DEBUG'):
+            logger.debug(f"Calibration commit request parsing error: {type(e).__name__}", exc_info=True)
+        else:
+            logger.error("Calibration commit request failed")
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
+
+    try:
         return lambda_to_fastapi_response(
             calibration_commit_handler(_calibration_event("/calibration/commit", body), None)
         )
     except Exception as e:
-        logger.error(f"Error in calibration_commit: {e}")
+        if os.getenv('DEBUG'):
+            logger.debug(f"Calibration commit operation error: {type(e).__name__}", exc_info=True)
+        else:
+            logger.error("Calibration commit operation failed")
         return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 @app.post("/api/calibration/suggest")
@@ -1058,13 +1125,36 @@ async def calibration_suggest(request: Request):
     denied = _require_calibration_access(request)
     if denied:
         return denied
+
+    # Validate request headers
+    header_error = _validate_calibration_request(
+        request.headers.get("content-type"),
+        request.headers.get("content-length")
+    )
+    if header_error:
+        return header_error
+
     try:
         body = await request.json()
+    except json.JSONDecodeError:
+        logger.warning("[SECURITY] Calibration suggest request rejected: invalid JSON")
+        return JSONResponse(content={"error": "Invalid JSON in request body"}, status_code=400)
+    except Exception as e:
+        if os.getenv('DEBUG'):
+            logger.debug(f"Calibration suggest request parsing error: {type(e).__name__}", exc_info=True)
+        else:
+            logger.error("Calibration suggest request failed")
+        return JSONResponse(content={"error": "Internal server error"}, status_code=500)
+
+    try:
         return lambda_to_fastapi_response(
             calibration_suggest_handler(_calibration_event("/calibration/suggest", body), None)
         )
     except Exception as e:
-        logger.error(f"Error in calibration_suggest: {e}")
+        if os.getenv('DEBUG'):
+            logger.debug(f"Calibration suggest operation error: {type(e).__name__}", exc_info=True)
+        else:
+            logger.error("Calibration suggest operation failed")
         return JSONResponse(content={"error": "Internal server error"}, status_code=500)
 
 # --- Static File Serving ---
