@@ -10,12 +10,13 @@ const defaultFilters = {
   predictionModels: [],
   forecastHours: 72,
   // Calibration correction state
-  calibrationMode: false,          // toggle — panel visible and active
-  calibrationStart: null,          // string | null — full ISO-8601 datetime, e.g. "2026-10-08T15:13"
-  calibrationEnd: null,            // string | null
-  calibrationOffset: 0.0,          // metres, float
-  calibrationReference: 'none',   // 'none' | 'Ashdod' | 'Ashkelon'
-  calibrationPreviewData: null,   // API response or null
+  calibrationMode: false,              // toggle — panel visible and active
+  calibrationStart: null,              // string | null — full ISO-8601 datetime, e.g. "2026-10-08T15:13"
+  calibrationEnd: null,                // string | null
+  calibrationOffset: 0.0,              // metres, float
+  calibrationReference: 'none',        // 'none' | 'Ashdod' | 'Ashkelon'
+  calibrationCorrectionType: 'offset', // 'offset' | 'interpolate'
+  calibrationPreviewData: null,        // API response or null
 };
 
 export const useFilters = () => {
@@ -46,6 +47,7 @@ export const useFilters = () => {
       calibrationEnd: filters.calibrationEnd || `${endDateStr}T23:59`,
       calibrationOffset: filters.calibrationOffset,
       calibrationReference: filters.calibrationReference,
+      calibrationCorrectionType: filters.calibrationCorrectionType,
     };
   }, [filters]);
 

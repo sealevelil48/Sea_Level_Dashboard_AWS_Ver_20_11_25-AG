@@ -504,9 +504,22 @@ export const useChartJsConfig = ({
       } = calibrationPreviewData;
 
       // Corrected line — mint green dashed
+      // CRITICAL FIX: For offset mode, calculate Y-axis on-the-fly using current slider value
+      // For interpolate mode, use pre-calculated backend value
       const correctedPoints = previewRows
-        .filter(r => r.corrected_value != null && !isNaN(r.corrected_value))
-        .map(r => ({ x: new Date(r.Tab_DateTime), y: r.corrected_value }));
+        .filter(r => {
+          if (filters.calibrationCorrectionType === 'offset') {
+            return r.raw_value != null && !isNaN(r.raw_value);
+          } else {
+            return r.corrected_value != null && !isNaN(r.corrected_value);
+          }
+        })
+        .map(r => ({
+          x: new Date(r.Tab_DateTime),
+          y: filters.calibrationCorrectionType === 'offset'
+            ? (r.raw_value + filters.calibrationOffset)  // Calculate in browser for instant updates
+            : r.corrected_value  // Use backend value for interpolate mode
+        }));
 
       if (correctedPoints.length > 0) {
         const offsetLabel = calOffset >= 0 ? `+${calOffset}` : `${calOffset}`;
@@ -595,7 +608,7 @@ export const useChartJsConfig = ({
     }
 
     return { datasets };
-  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData]);
+  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData, filters.calibrationOffset]);
 
   return chartData;
 };

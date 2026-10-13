@@ -37,15 +37,21 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     setIsLoadingPreview(true);
     setError(null);
     try {
-      const result = await apiService.previewCalibration({
+      const params = {
         station: targetStation,
         start_datetime: filterValues.calibrationStart,
         end_datetime: filterValues.calibrationEnd,
-        offset: filterValues.calibrationOffset,
-        ...(filterValues.calibrationReference !== 'none' && {
-          reference_station: filterValues.calibrationReference,
-        }),
-      });
+        correction_type: filterValues.calibrationCorrectionType,
+      };
+      // Only include offset for 'offset' mode
+      if (filterValues.calibrationCorrectionType === 'offset') {
+        params.offset = filterValues.calibrationOffset;
+      }
+      // Include reference station if not 'none'
+      if (filterValues.calibrationReference !== 'none') {
+        params.reference_station = filterValues.calibrationReference;
+      }
+      const result = await apiService.previewCalibration(params);
       if (!result) {
         setError('Preview returned no data');
         return;
@@ -76,6 +82,9 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
       });
       if (result?.suggested_offset != null) {
         updateFilter('calibrationOffset', result.suggested_offset);
+        // Log additional stats from smart suggest algorithm
+        const msg = `Suggested: ${result.suggested_offset}m (${result.confidence} confidence, ${result.before_samples} before / ${result.after_samples} after samples)`;
+        console.info(`[Calibration] ${msg}`);
       }
     } catch (e) {
       setError(e.message);
@@ -94,12 +103,17 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     setIsCommitting(true);
     setError(null);
     try {
-      const result = await apiService.commitCalibration({
+      const params = {
         station: targetStation,
         start_datetime: filterValues.calibrationStart,
         end_datetime: filterValues.calibrationEnd,
-        offset: filterValues.calibrationOffset,
-      });
+        correction_type: filterValues.calibrationCorrectionType,
+      };
+      // Only include offset for 'offset' mode
+      if (filterValues.calibrationCorrectionType === 'offset') {
+        params.offset = filterValues.calibrationOffset;
+      }
+      const result = await apiService.commitCalibration(params);
       setCommitResult(result);
       updateFilter('calibrationPreviewData', null);
       updateFilter('calibrationMode', false);

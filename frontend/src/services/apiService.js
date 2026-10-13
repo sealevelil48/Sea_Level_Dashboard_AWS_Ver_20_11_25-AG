@@ -356,7 +356,7 @@ class ApiService {
   }
 
   async previewCalibration(params) {
-    // params: { station, start_datetime, end_datetime, offset, reference_station? }
+    // params: { station, start_datetime, end_datetime, correction_type?, offset?, reference_station? }
     try {
       return await this.request('/api/calibration/preview', {
         method: 'POST',
@@ -370,7 +370,7 @@ class ApiService {
   }
 
   async commitCalibration(params) {
-    // params: { station, start_datetime, end_datetime, offset }
+    // params: { station, start_datetime, end_datetime, correction_type?, offset? }
     try {
       return await this.request('/api/calibration/commit', {
         method: 'POST',
@@ -385,6 +385,7 @@ class ApiService {
 
   async suggestCalibration(params) {
     // params: { station, start_datetime, end_datetime }
+    // Returns: { suggested_offset, confidence, before_median, after_median, before_samples, after_samples }
     try {
       return await this.request('/api/calibration/suggest', {
         method: 'POST',

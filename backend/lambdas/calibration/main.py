@@ -1,5 +1,10 @@
 # backend/lambdas/calibration/main.py
-# Three handlers: preview (in-memory), commit (additive UPDATE), suggest (step-detection)
+# Three handlers: preview (in-memory), commit (SQL-based), suggest (12-hour stable windows)
+#
+# Phase 2 Features:
+#   - lambda_handler_preview: Both offset and interpolate modes (in-memory)
+#   - lambda_handler_commit: SQL-based interpolation + offset mode (database UPDATE)
+#   - lambda_handler_suggest: 12-hour stable window algorithm (before/after medians)
 #
 # Security controls applied (see inline comments):
 #   1. All three endpoints require a correct X-Calibration-Key header.
@@ -15,7 +20,7 @@ import os
 import re
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # Add paths for shared modules (mirrors pattern in get_data/main.py)
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -227,10 +232,20 @@ def _validate_window(start_dt, end_dt):
     """
     if start_dt >= end_dt:
         return _err(400, "start_datetime must be earlier than end_datetime")
-    from datetime import timedelta
     if (end_dt - start_dt) > timedelta(days=MAX_WINDOW_DAYS):
         return _err(400, f"Correction window cannot exceed {MAX_WINDOW_DAYS} days")
     return None
+
+def _validate_correction_type(correction_type):
+    """
+    Return (correction_type, error_response).
+    Validates that correction_type is either 'offset' or 'interpolate'.
+    """
+    if not correction_type:
+        correction_type = 'offset'  # Default
+    if correction_type not in ('offset', 'interpolate'):
+        return None, _err(400, "correction_type must be 'offset' or 'interpolate'")
+    return correction_type, None
 
 def _fetch_raw(station, start_datetime, end_datetime):
     """
@@ -259,6 +274,124 @@ def _fetch_raw(station, start_datetime, end_datetime):
         rows = result.fetchall()
         cols = list(result.keys())
     return pd.DataFrame(rows, columns=cols)
+
+def _fetch_interpolation_boundaries(station, start_dt, end_dt):
+    """
+    Fetch the raw values at the boundaries of the correction window.
+    Returns the first data point before/at start_dt and the last data point before/at end_dt.
+    Raises exception if boundaries not found.
+    """
+    sql = text("""
+        SELECT
+            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value,
+            m."Tab_DateTime",
+            'start' AS boundary
+        FROM "Monitors_info2" m
+        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+        WHERE l."Station" = :station
+          AND m."Tab_DateTime" <= :start_dt
+        ORDER BY m."Tab_DateTime" DESC
+        LIMIT 1
+
+        UNION ALL
+
+        SELECT
+            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value,
+            m."Tab_DateTime",
+            'end' AS boundary
+        FROM "Monitors_info2" m
+        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+        WHERE l."Station" = :station
+          AND m."Tab_DateTime" >= :end_dt
+        ORDER BY m."Tab_DateTime" ASC
+        LIMIT 1
+    """)
+    with engine.connect() as conn:
+        result = conn.execute(sql, {
+            "station": station,
+            "start_dt": start_dt.isoformat(),
+            "end_dt": end_dt.isoformat(),
+        })
+        rows = result.fetchall()
+
+    start_val = None
+    end_val = None
+    for row in rows:
+        if row[2] == 'start':
+            start_val = float(row[0])
+        elif row[2] == 'end':
+            end_val = float(row[0])
+
+    if start_val is None or end_val is None:
+        raise ValueError("Cannot find data at correction window boundaries")
+
+    return start_val, end_val
+
+def _fetch_stable_window_data(station, start_dt, end_dt, hours_before=12, hours_after=12):
+    """
+    Fetch data for three windows: before, correction, and after.
+    Used by suggest handler to compute medians and IQR.
+    Returns: (before_data, after_data) as Series of raw_value
+    """
+    before_start = start_dt - timedelta(hours=hours_before)
+    after_end = end_dt + timedelta(hours=hours_after)
+
+    # Fetch before window: [before_start, start_dt)
+    sql_before = text("""
+        SELECT CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value
+        FROM "Monitors_info2" m
+        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+        WHERE l."Station" = :station
+          AND m."Tab_DateTime" >= :before_start
+          AND m."Tab_DateTime" < :start_dt
+        ORDER BY m."Tab_DateTime" ASC
+    """)
+
+    # Fetch after window: (end_dt, after_end]
+    sql_after = text("""
+        SELECT CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value
+        FROM "Monitors_info2" m
+        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+        WHERE l."Station" = :station
+          AND m."Tab_DateTime" > :end_dt
+          AND m."Tab_DateTime" <= :after_end
+        ORDER BY m."Tab_DateTime" ASC
+    """)
+
+    with engine.connect() as conn:
+        before_result = conn.execute(sql_before, {
+            "station": station,
+            "before_start": before_start.isoformat(),
+            "start_dt": start_dt.isoformat(),
+        })
+        before_rows = [float(row[0]) for row in before_result.fetchall()]
+
+        after_result = conn.execute(sql_after, {
+            "station": station,
+            "end_dt": end_dt.isoformat(),
+            "after_end": after_end.isoformat(),
+        })
+        after_rows = [float(row[0]) for row in after_result.fetchall()]
+
+    before_series = pd.Series(before_rows) if before_rows else pd.Series(dtype=float)
+    after_series = pd.Series(after_rows) if after_rows else pd.Series(dtype=float)
+
+    return before_series, after_series
+
+def _calculate_window_stats(data_series):
+    """
+    Calculate median and interquartile range (IQR) for a data window.
+    Returns: (median, iqr) — IQR measures consistency/stability.
+    """
+    if data_series.empty:
+        return None, None
+
+    median = data_series.median()
+    q1 = data_series.quantile(0.25)
+    q3 = data_series.quantile(0.75)
+    iqr = q3 - q1
+
+    return median, iqr
 
 def _invalidate_redis_cache():
     """
@@ -293,14 +426,16 @@ def _invalidate_redis_cache():
 
 def lambda_handler_preview(event, context):
     """
-    Apply a proposed offset in-memory and return the preview data.
+    Apply a proposed correction in-memory and return the preview data.
+    Supports two modes: vertical offset or linear interpolation (snip).
     Optionally fetch a reference station for side-by-side comparison.
 
     Request body: {
         station: str,
         start_datetime: str,   # ISO-8601, e.g. "2026-10-08T15:13:00"
         end_datetime: str,
-        offset: float,
+        correction_type: str,  # 'offset' (default) or 'interpolate'
+        offset: float,         # Used only for 'offset' mode
         reference_station?: str   # 'Ashdod' | 'Ashkelon' | omit
     }
     Headers: X-Calibration-Key: <key>
@@ -329,6 +464,10 @@ def lambda_handler_preview(event, context):
     if err:
         return err
 
+    correction_type, err = _validate_correction_type(body.get("correction_type", "offset"))
+    if err:
+        return err
+
     reference_station_raw = body.get("reference_station")
     reference_station = None
     if reference_station_raw and reference_station_raw != "none":
@@ -337,18 +476,50 @@ def lambda_handler_preview(event, context):
         reference_station = reference_station_raw
 
     try:
-        offset = float(body.get("offset", 0.0))
-    except (TypeError, ValueError):
-        return _err(400, "offset must be a number")
-    if not np.isfinite(offset):
-        return _err(400, "offset must be a finite number")
-
-    try:
         df = _fetch_raw(station, start_dt, end_dt)
         if df.empty:
             return _err(404, "No data found for the specified station and time window")
 
-        df["corrected_value"] = df["raw_value"] + offset
+        # Apply correction based on type
+        if correction_type == 'offset':
+            try:
+                offset = float(body.get("offset", 0.0))
+            except (TypeError, ValueError):
+                return _err(400, "offset must be a number")
+            if not np.isfinite(offset):
+                return _err(400, "offset must be a finite number")
+            df["corrected_value"] = df["raw_value"] + offset
+
+        elif correction_type == 'interpolate':
+            # Linear interpolation: connect start and end values
+            df_sorted = df.sort_values('Tab_DateTime')
+            df_sorted['Tab_DateTime'] = pd.to_datetime(df_sorted['Tab_DateTime'])
+
+            # Get start and end raw values
+            start_rows = df_sorted[df_sorted['Tab_DateTime'] <= start_dt]
+            end_rows = df_sorted[df_sorted['Tab_DateTime'] >= end_dt]
+
+            if start_rows.empty or end_rows.empty:
+                return _err(422, "Cannot interpolate: missing start or end data points")
+
+            start_val = float(start_rows.iloc[-1]['raw_value'])
+            end_val = float(end_rows.iloc[0]['raw_value'])
+
+            # Calculate interpolation line
+            time_delta = (end_dt - start_dt).total_seconds()
+            value_delta = end_val - start_val
+
+            def interpolate(row):
+                if start_dt <= row['Tab_DateTime'] <= end_dt:
+                    elapsed = (row['Tab_DateTime'] - start_dt).total_seconds()
+                    return start_val + (elapsed / time_delta) * value_delta
+                else:
+                    return row['raw_value']
+
+            df_sorted['Tab_DateTime'] = pd.to_datetime(df_sorted['Tab_DateTime'])
+            df_sorted['corrected_value'] = df_sorted.apply(interpolate, axis=1)
+            df = df_sorted
+
         df["Tab_DateTime"] = df["Tab_DateTime"].astype(str)
         data_records = df[["Tab_DateTime", "Station", "raw_value", "corrected_value"]].to_dict(orient="records")
 
@@ -362,7 +533,8 @@ def lambda_handler_preview(event, context):
 
         return _ok({
             "station": station,
-            "offset_applied": offset,
+            "correction_type": correction_type,
+            "offset_applied": float(body.get("offset", 0.0)) if correction_type == 'offset' else None,
             "start_datetime": start_dt.isoformat(),
             "end_datetime": end_dt.isoformat(),
             "data": data_records,
@@ -375,20 +547,22 @@ def lambda_handler_preview(event, context):
 
 
 # ---------------------------------------------------------------------------
-# Handler: Commit (additive UPDATE, exact timestamp bounds)
+# Handler: Commit (SQL-based UPDATE, supports both offset and interpolate)
 # ---------------------------------------------------------------------------
 
 def lambda_handler_commit(event, context):
     """
-    Persist the calibration offset to the database.
-    Uses COALESCE + additive increment so multiple corrections compound safely.
-    Uses exact timestamp bounds — no DATE() truncation.
+    Persist the calibration correction to the database.
+    Supports two modes:
+      - 'offset': Additive vertical shift (COALESCE + increment)
+      - 'interpolate': SQL-based linear interpolation (calculates per-row offset)
 
     Request body: {
         station: str,
         start_datetime: str,
         end_datetime: str,
-        offset: float
+        correction_type: str,  # 'offset' or 'interpolate'
+        offset: float          # Used only for 'offset' mode
     }
     Headers: X-Calibration-Key: <key>
     """
@@ -416,66 +590,137 @@ def lambda_handler_commit(event, context):
     if err:
         return err
 
-    offset_raw = body.get("offset")
-    if offset_raw is None:
-        return _err(400, "offset is required")
-    try:
-        offset = float(offset_raw)
-    except (TypeError, ValueError):
-        return _err(400, "offset must be a number")
-    if not np.isfinite(offset):
-        return _err(400, "offset must be a finite number")
-    if abs(offset) > 10.0:
-        return _err(400, "offset magnitude must be <= 10.0 metres")
-
-    # Additive UPDATE: accumulates corrections, never overwrites prior ones.
-    # Direct timestamp comparison — no DATE() cast — preserves sub-minute precision.
-    update_sql = text("""
-        UPDATE "Monitors_info2" AS m
-        SET "Calibration_Offset" = COALESCE("Calibration_Offset", 0) + :offset
-        FROM "Locations" AS l
-        WHERE m."Tab_TabularTag" = l."Tab_TabularTag"
-          AND l."Station" = :station
-          AND m."Tab_DateTime" >= :start_datetime
-          AND m."Tab_DateTime" <= :end_datetime
-    """)
+    correction_type, err = _validate_correction_type(body.get("correction_type", "offset"))
+    if err:
+        return err
 
     try:
-        with engine.begin() as conn:
-            result = conn.execute(update_sql, {
-                "offset": offset,
+        # --- Offset Mode ---
+        if correction_type == 'offset':
+            offset_raw = body.get("offset")
+            if offset_raw is None:
+                return _err(400, "offset is required for offset mode")
+            try:
+                offset = float(offset_raw)
+            except (TypeError, ValueError):
+                return _err(400, "offset must be a number")
+            if not np.isfinite(offset):
+                return _err(400, "offset must be a finite number")
+            if abs(offset) > 10.0:
+                return _err(400, "offset magnitude must be <= 10.0 metres")
+
+            # Additive UPDATE: accumulates corrections, never overwrites prior ones.
+            # Direct timestamp comparison — no DATE() cast — preserves sub-minute precision.
+            update_sql = text("""
+                UPDATE "Monitors_info2" AS m
+                SET "Calibration_Offset" = COALESCE("Calibration_Offset", 0) + :offset
+                FROM "Locations" AS l
+                WHERE m."Tab_TabularTag" = l."Tab_TabularTag"
+                  AND l."Station" = :station
+                  AND m."Tab_DateTime" >= :start_datetime
+                  AND m."Tab_DateTime" <= :end_datetime
+            """)
+
+            with engine.begin() as conn:
+                result = conn.execute(update_sql, {
+                    "offset": offset,
+                    "station": station,
+                    "start_datetime": start_dt.isoformat(),
+                    "end_datetime": end_dt.isoformat(),
+                })
+                rows_updated = result.rowcount
+
+            logger.info(f"[OK] Committed offset {offset} for {station} ({rows_updated} rows)")
+
+            # Invalidate Redis cache so dashboard fetches fresh corrected data immediately
+            _invalidate_redis_cache()
+
+            return _ok({
+                "success": True,
                 "station": station,
+                "correction_type": "offset",
+                "offset_applied": offset,
+                "rows_updated": rows_updated,
                 "start_datetime": start_dt.isoformat(),
                 "end_datetime": end_dt.isoformat(),
             })
-            rows_updated = result.rowcount
 
-        logger.info(f"[OK] Committed offset {offset} for {station} ({rows_updated} rows)")
+        # --- Interpolate Mode ---
+        elif correction_type == 'interpolate':
+            # Fetch boundary values: value at start_dt and value at end_dt
+            start_val, end_val = _fetch_interpolation_boundaries(station, start_dt, end_dt)
 
-        # Invalidate Redis cache so dashboard fetches fresh corrected data immediately
-        _invalidate_redis_cache()
+            # Calculate time and value deltas
+            total_seconds = (end_dt - start_dt).total_seconds()
+            value_delta = end_val - start_val
 
-        return _ok({
-            "success": True,
-            "station": station,
-            "offset_applied": offset,
-            "rows_updated": rows_updated,
-            "start_datetime": start_dt.isoformat(),
-            "end_datetime": end_dt.isoformat(),
-        })
+            # PostgreSQL UPDATE with interpolation formula:
+            # The offset at each point is: interpolated_value - raw_value
+            # where interpolated_value = start_val + (elapsed_time / total_time) * value_delta
+            interpolate_sql = text("""
+                UPDATE "Monitors_info2" AS m
+                SET "Calibration_Offset" =
+                    ( :start_val + (EXTRACT(EPOCH FROM (m."Tab_DateTime" - :start_dt)) / :total_seconds) * :value_delta )
+                    - CAST(m."Tab_Value_mDepthC1" AS FLOAT)
+                FROM "Locations" AS l
+                WHERE m."Tab_TabularTag" = l."Tab_TabularTag"
+                  AND l."Station" = :station
+                  AND m."Tab_DateTime" >= :start_dt
+                  AND m."Tab_DateTime" <= :end_dt
+            """)
 
+            with engine.begin() as conn:
+                result = conn.execute(interpolate_sql, {
+                    "start_val": start_val,
+                    "end_dt": end_dt.isoformat(),
+                    "start_dt": start_dt.isoformat(),
+                    "total_seconds": total_seconds,
+                    "value_delta": value_delta,
+                    "station": station,
+                })
+                rows_updated = result.rowcount
+
+            logger.info(
+                f"[OK] Committed interpolation for {station} ({rows_updated} rows): "
+                f"start_val={start_val}, end_val={end_val}, value_delta={value_delta}"
+            )
+
+            # Invalidate Redis cache
+            _invalidate_redis_cache()
+
+            return _ok({
+                "success": True,
+                "station": station,
+                "correction_type": "interpolate",
+                "start_value": start_val,
+                "end_value": end_val,
+                "rows_updated": rows_updated,
+                "start_datetime": start_dt.isoformat(),
+                "end_datetime": end_dt.isoformat(),
+            })
+
+    except ValueError as ve:
+        logger.error(f"[ERROR] commit_correction validation: {ve}")
+        return _err(422, str(ve))
     except Exception as e:
         logger.error(f"[ERROR] commit_correction: {e}", exc_info=True)
         return _err(500, "Internal server error")
 
 
 # ---------------------------------------------------------------------------
-# Handler: Suggest (step-detection on hourly medians)
+# Handler: Suggest (12-hour stable window algorithm)
 # ---------------------------------------------------------------------------
 
 def lambda_handler_suggest(event, context):
     """
-    Detect the largest single-step shift in the data and suggest the corrective offset.
+    Detect calibration offset using 12-hour stable window algorithm.
+
+    Algorithm:
+      1. Fetch 12 hours BEFORE start_datetime (before_window)
+      2. Fetch 12 hours AFTER end_datetime (after_window)
+      3. Calculate median of each window, ignore data between (spike area)
+      4. Suggested offset = before_median - after_median
+      5. Confidence based on IQR consistency of each window
 
     Request body: {
         station: str,
@@ -509,29 +754,43 @@ def lambda_handler_suggest(event, context):
         return err
 
     try:
-        df = _fetch_raw(station, start_dt, end_dt)
-        if df.empty:
-            return _err(404, "No data found for the specified station and time window")
+        # Fetch stable windows: before (12h before start) and after (12h after end)
+        before_data, after_data = _fetch_stable_window_data(station, start_dt, end_dt)
 
-        df["Tab_DateTime"] = pd.to_datetime(df["Tab_DateTime"])
-        df = df.set_index("Tab_DateTime")
-        hourly = df["raw_value"].resample("1h").median().dropna()
+        if before_data.empty or after_data.empty:
+            return _err(
+                422,
+                "Insufficient data to detect shift: need stable data 12 hours before and after the correction window"
+            )
 
-        if len(hourly) < 2:
-            return _err(422, "Not enough data to detect a step shift (need at least 2 hours)")
+        # Calculate medians and IQR for each window
+        before_median, before_iqr = _calculate_window_stats(before_data)
+        after_median, after_iqr = _calculate_window_stats(after_data)
 
-        diffs = hourly.diff().dropna()
-        max_shift_idx = diffs.abs().idxmax()
-        max_shift_val = float(diffs[max_shift_idx])
-        suggested_offset = round(-max_shift_val, 4)
-        confidence = "high" if abs(max_shift_val) > 0.05 else "low"
+        if before_median is None or after_median is None:
+            return _err(422, "Could not calculate statistics for stable windows")
+
+        # Suggested offset: the median difference (before - after)
+        # This represents the shift to correct for
+        suggested_offset = round(before_median - after_median, 4)
+
+        # Confidence based on IQR consistency
+        # Low IQR in both windows = high confidence (stable plateaus)
+        # High IQR in either window = low confidence (noisy data)
+        avg_iqr = (before_iqr + after_iqr) / 2.0
+        confidence_threshold = 0.05  # Threshold for IQR stability
+        confidence = "high" if avg_iqr < confidence_threshold else "medium" if avg_iqr < 0.15 else "low"
 
         return _ok({
             "station": station,
             "suggested_offset": suggested_offset,
             "confidence": confidence,
-            "shift_detected_at": str(max_shift_idx),
-            "method": "step_detection",
+            "method": "12_hour_stable_window",
+            "before_median": round(before_median, 4),
+            "after_median": round(after_median, 4),
+            "average_iqr": round(avg_iqr, 4),
+            "samples_before": len(before_data),
+            "samples_after": len(after_data),
         })
 
     except Exception as e:
