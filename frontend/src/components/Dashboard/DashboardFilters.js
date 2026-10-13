@@ -21,6 +21,7 @@ const DashboardFilters = ({
   filtersOpen,
   setFiltersOpen,
   calibrationHook,
+  selectedPoints,
 }) => {
   return (
     <>
@@ -160,6 +161,27 @@ const DashboardFilters = ({
                   <Form.Label className="small mb-1" style={{ color: '#00ff99', fontWeight: 600 }}>
                     Correction Window
                   </Form.Label>
+
+                  <Button
+                    variant="outline-success"
+                    size="sm"
+                    className="w-100 mb-2"
+                    style={{ fontSize: '0.75rem' }}
+                    onClick={() => {
+                      if (!selectedPoints || selectedPoints.length !== 2) {
+                        alert('Please click exactly 2 points on the graph first');
+                        return;
+                      }
+                      // Sort by time to ensure start < end
+                      const sorted = [...selectedPoints].sort((a, b) => new Date(a.x) - new Date(b.x));
+                      const startISO = new Date(sorted[0].x).toISOString().slice(0, 16);
+                      const endISO = new Date(sorted[1].x).toISOString().slice(0, 16);
+                      onFilterChange('calibrationStart', startISO);
+                      onFilterChange('calibrationEnd', endISO);
+                    }}
+                  >
+                    🎯 Use Graph Selection
+                  </Button>
 
                   <Form.Group className="mb-1">
                     <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>

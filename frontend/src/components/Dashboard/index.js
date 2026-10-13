@@ -870,6 +870,7 @@ function Dashboard() {
                 filtersOpen={filtersOpen}
                 setFiltersOpen={setFiltersOpen}
                 calibrationHook={calibrationHook}
+                selectedPoints={selectedPoints}
               />
             </Col>
 

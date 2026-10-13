@@ -514,7 +514,10 @@ def lambda_handler_preview(event, context):
             value_delta = end_val - start_val
 
             def interpolate(row):
-                if start_dt <= row['Tab_DateTime'] <= end_dt:
+                # For rows strictly within the correction window (between start_dt and end_dt),
+                # replace with interpolated value (straight line from start to end)
+                # For rows outside the window, keep the effective value
+                if row['Tab_DateTime'] > start_dt and row['Tab_DateTime'] < end_dt:
                     elapsed = (row['Tab_DateTime'] - start_dt).total_seconds()
                     return start_val + (elapsed / time_delta) * value_delta
                 else:
