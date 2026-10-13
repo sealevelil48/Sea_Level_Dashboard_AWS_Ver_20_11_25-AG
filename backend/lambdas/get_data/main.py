@@ -51,6 +51,7 @@ CALIBRATION_OFFSET_EXISTS = _calibration_column_exists()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.info(f"Calibration offset column exists: {CALIBRATION_OFFSET_EXISTS}")
 
 def clean_numeric_data(df):
     """Clean numeric data by replacing inf/nan values"""

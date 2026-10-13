@@ -32,6 +32,13 @@ except ImportError as e:
     DATABASE_AVAILABLE = False
 
 try:
+    import redis
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    redis = None
+
+try:
     from security import SecurityUtils
     SECURITY_AVAILABLE = True
 except ImportError:
@@ -253,6 +260,33 @@ def _fetch_raw(station, start_datetime, end_datetime):
         cols = list(result.keys())
     return pd.DataFrame(rows, columns=cols)
 
+def _invalidate_redis_cache():
+    """
+    Flush Redis cache to force fresh data query on next request.
+    Allows dashboard to immediately reflect calibration corrections.
+    """
+    if not REDIS_AVAILABLE:
+        logger.warning("[WARN] Redis not available - cache invalidation skipped")
+        return
+
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        r = redis.from_url(redis_url, decode_responses=True)
+
+        # Get all keys matching the data cache pattern
+        # The pattern depends on apiService.js getCacheKey() format
+        keys = r.keys("*data*") + r.keys("*stations*") + r.keys("*/api/*")
+
+        if keys:
+            deleted_count = r.delete(*keys)
+            logger.info(f"[OK] Redis cache invalidated: {deleted_count} keys deleted")
+        else:
+            logger.info("[OK] Redis cache already empty")
+
+        r.close()
+    except Exception as e:
+        logger.warning(f"[WARN] Could not invalidate Redis cache: {e}")
+
 # ---------------------------------------------------------------------------
 # Handler: Preview (in-memory, no DB writes)
 # ---------------------------------------------------------------------------
@@ -417,6 +451,10 @@ def lambda_handler_commit(event, context):
             rows_updated = result.rowcount
 
         logger.info(f"[OK] Committed offset {offset} for {station} ({rows_updated} rows)")
+
+        # Invalidate Redis cache so dashboard fetches fresh corrected data immediately
+        _invalidate_redis_cache()
+
         return _ok({
             "success": True,
             "station": station,
