@@ -249,15 +249,17 @@ def _validate_correction_type(correction_type):
 
 def _fetch_raw(station, start_datetime, end_datetime):
     """
-    Return DataFrame with columns: Tab_DateTime, Station, raw_value.
+    Return DataFrame with columns: Tab_DateTime, Station, raw_value, effective_value.
     station has already been validated; start/end are datetime objects
     converted to ISO strings for the SQL bind parameter.
+    effective_value = raw_value + existing calibration offset (for seamless interpolation)
     """
     sql = text("""
         SELECT
             m."Tab_DateTime",
             l."Station",
-            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value
+            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value,
+            (CAST(m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0)) AS effective_value
         FROM "Monitors_info2" m
         JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
         WHERE l."Station" = :station
@@ -277,13 +279,14 @@ def _fetch_raw(station, start_datetime, end_datetime):
 
 def _fetch_interpolation_boundaries(station, start_dt, end_dt):
     """
-    Fetch the raw values at the boundaries of the correction window.
+    Fetch the effective values at the boundaries of the correction window.
     Returns the first data point before/at start_dt and the last data point before/at end_dt.
+    Uses effective_value (raw + existing offset) so interpolation seamlessly connects the visible lines.
     Raises exception if boundaries not found.
     """
     sql = text("""
         SELECT
-            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value,
+            (CAST(m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0)) AS effective_value,
             m."Tab_DateTime",
             'start' AS boundary
         FROM "Monitors_info2" m
@@ -296,7 +299,7 @@ def _fetch_interpolation_boundaries(station, start_dt, end_dt):
         UNION ALL
 
         SELECT
-            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value,
+            (CAST(m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0)) AS effective_value,
             m."Tab_DateTime",
             'end' AS boundary
         FROM "Monitors_info2" m
@@ -495,15 +498,16 @@ def lambda_handler_preview(event, context):
             df_sorted = df.sort_values('Tab_DateTime')
             df_sorted['Tab_DateTime'] = pd.to_datetime(df_sorted['Tab_DateTime'])
 
-            # Get start and end raw values
+            # Get start and end effective values (raw + existing offset)
+            # This ensures interpolation seamlessly connects the currently visible lines
             start_rows = df_sorted[df_sorted['Tab_DateTime'] <= start_dt]
             end_rows = df_sorted[df_sorted['Tab_DateTime'] >= end_dt]
 
             if start_rows.empty or end_rows.empty:
                 return _err(422, "Cannot interpolate: missing start or end data points")
 
-            start_val = float(start_rows.iloc[-1]['raw_value'])
-            end_val = float(end_rows.iloc[0]['raw_value'])
+            start_val = float(start_rows.iloc[-1]['effective_value'])
+            end_val = float(end_rows.iloc[0]['effective_value'])
 
             # Calculate interpolation line
             time_delta = (end_dt - start_dt).total_seconds()
@@ -514,7 +518,7 @@ def lambda_handler_preview(event, context):
                     elapsed = (row['Tab_DateTime'] - start_dt).total_seconds()
                     return start_val + (elapsed / time_delta) * value_delta
                 else:
-                    return row['raw_value']
+                    return row['effective_value']
 
             df_sorted['Tab_DateTime'] = pd.to_datetime(df_sorted['Tab_DateTime'])
             df_sorted['corrected_value'] = df_sorted.apply(interpolate, axis=1)

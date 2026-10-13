@@ -522,9 +522,12 @@ export const useChartJsConfig = ({
         }));
 
       if (correctedPoints.length > 0) {
-        const offsetLabel = calOffset >= 0 ? `+${calOffset}` : `${calOffset}`;
+        // Only show offset in label for offset mode; interpolate mode doesn't use a simple offset
+        const offsetLabel = filters.calibrationCorrectionType === 'offset'
+          ? ` (${calOffset >= 0 ? '+' : ''}${calOffset}m)`
+          : ' (Interpolated)';
         datasets.push({
-          label: `${calStation} Corrected (${offsetLabel}m)`,
+          label: `${calStation} Corrected${offsetLabel}`,
           data: correctedPoints,
           borderColor: '#00ff99',
           backgroundColor: '#00ff99',

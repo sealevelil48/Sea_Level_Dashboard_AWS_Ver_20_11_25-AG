@@ -4,7 +4,8 @@
       "PowerShell(Get-NetTCPConnection -LocalPort 30886 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Host \"Port 30886 freed\")",
       "Bash(git commit -m 'fix: add Python process cleanup to start_app.bat to free port 30886 *)",
       "Bash(git commit -m 'fix: clear Redis cache on calibration commit and add column detection logging *)",
-      "Bash(python -m py_compile main.py)"
+      "Bash(python -m py_compile main.py)",
+      "Bash(git commit -m 'fix: use effective values for interpolation to respect existing offsets *)"
     ]
   }
 }
