@@ -630,7 +630,7 @@ def lambda_handler_commit(event, context):
                 })
                 rows_updated = result.rowcount
 
-            logger.info(f"[OK] Committed offset {offset} for {station} ({rows_updated} rows)")
+            logger.info(f"[OK] Committed offset correction for {station} ({rows_updated} rows)")
 
             # Invalidate Redis cache so dashboard fetches fresh corrected data immediately
             _invalidate_redis_cache()
@@ -681,8 +681,7 @@ def lambda_handler_commit(event, context):
                 rows_updated = result.rowcount
 
             logger.info(
-                f"[OK] Committed interpolation for {station} ({rows_updated} rows): "
-                f"start_val={start_val}, end_val={end_val}, value_delta={value_delta}"
+                f"[OK] Committed interpolation for {station} ({rows_updated} rows)"
             )
 
             # Invalidate Redis cache
