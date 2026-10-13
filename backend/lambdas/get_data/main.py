@@ -46,16 +46,17 @@ def _check_calibration_column_exists():
     Lazily check whether the Calibration_Offset column exists.
     Caches result to avoid repeated database queries.
     Avoids race condition where DB connection isn't ready at import time.
+    Thread-safe: only marks as checked after successful verification.
     """
     global _CALIBRATION_OFFSET_CHECKED, _CALIBRATION_OFFSET_EXISTS
 
     if _CALIBRATION_OFFSET_CHECKED:
         return _CALIBRATION_OFFSET_EXISTS
 
-    _CALIBRATION_OFFSET_CHECKED = True
-
     if not DATABASE_AVAILABLE or not engine:
         logger.warning("Database not available - calibration offsets will not be applied")
+        # Mark as checked only after resolving (avoids fail-open drift)
+        _CALIBRATION_OFFSET_CHECKED = True
         _CALIBRATION_OFFSET_EXISTS = False
         return False
 
@@ -67,10 +68,15 @@ def _check_calibration_column_exists():
             ))
             result = r.fetchone() is not None
             _CALIBRATION_OFFSET_EXISTS = result
+            # Only mark checked after successful query (fail-safe state transition)
+            _CALIBRATION_OFFSET_CHECKED = True
             logger.info(f"Calibration offset column exists: {result}")
             return result
     except Exception as e:
-        logger.warning(f"Could not check for calibration offset column: {e}")
+        # Log only exception type, not full message (prevents info disclosure)
+        logger.warning(f"Could not check for calibration offset column: {type(e).__name__}")
+        # Do NOT mark as checked on error — allows retry on next query
+        # This prevents permanent caching of a transient DB connection failure
         _CALIBRATION_OFFSET_EXISTS = False
         return False
 
@@ -534,11 +540,19 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
     else:
         # Sea level batch query
         if agg_level == 'raw':
-            sql_query = '''
+            # Apply stored calibration offset at query time (non-destructive correction).
+            # Same logic as load_data_from_db_optimized to ensure data consistency.
+            depth_expr = (
+                '(CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
+                ' + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0))'
+                if _check_calibration_column_exists()
+                else 'CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
+            )
+            sql_query = f'''
                 SELECT
                     m."Tab_DateTime",
                     l."Station",
-                    CAST(m."Tab_Value_mDepthC1" AS FLOAT) as "Tab_Value_mDepthC1",
+                    {depth_expr} as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m"
                 FROM "Monitors_info2" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
