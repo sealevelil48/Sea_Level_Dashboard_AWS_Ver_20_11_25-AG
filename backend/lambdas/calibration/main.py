@@ -139,7 +139,7 @@ def _refresh_station_allowlist():
 _refresh_station_allowlist()
 
 # Reference stations that may be overlaid for comparison
-ALLOWED_REFERENCE_STATIONS = frozenset({"Ashdod", "Ashkelon"})
+ALLOWED_REFERENCE_STATIONS = _ALLOWED_STATIONS
 
 # Maximum allowed correction window: 2 years
 MAX_WINDOW_DAYS = 730
@@ -239,12 +239,12 @@ def _validate_window(start_dt, end_dt):
 def _validate_correction_type(correction_type):
     """
     Return (correction_type, error_response).
-    Validates that correction_type is either 'offset' or 'interpolate'.
+    Validates that correction_type is either 'offset', 'interpolate', or 'relative'.
     """
     if not correction_type:
         correction_type = 'offset'  # Default
-    if correction_type not in ('offset', 'interpolate'):
-        return None, _err(400, "correction_type must be 'offset' or 'interpolate'")
+    if correction_type not in ('offset', 'interpolate', 'relative'):
+        return None, _err(400, "correction_type must be 'offset', 'interpolate', or 'relative'")
     return correction_type, None
 
 def _fetch_raw(station, start_datetime, end_datetime):
@@ -527,6 +527,36 @@ def lambda_handler_preview(event, context):
             df_sorted['corrected_value'] = df_sorted.apply(interpolate, axis=1)
             df = df_sorted
 
+        elif correction_type == 'relative':
+            if not reference_station:
+                return _err(400, "relative mode requires reference_station")
+
+            try:
+                expected_gap = float(body.get("expected_gap", 0.0))
+            except (TypeError, ValueError):
+                return _err(400, "expected_gap must be a number")
+            if not np.isfinite(expected_gap):
+                return _err(400, "expected_gap must be finite")
+
+            ref_df = _fetch_raw(reference_station, start_dt, end_dt)
+            if ref_df.empty:
+                return _err(404, f"No reference data for {reference_station} in window")
+
+            df_sorted = df.sort_values('Tab_DateTime')
+            df_merged = df_sorted.merge(
+                ref_df[['Tab_DateTime', 'effective_value']].rename(columns={'effective_value': 'ref_effective'}),
+                on='Tab_DateTime',
+                how='inner'
+            )
+
+            df_merged['offset_needed'] = (df_merged['ref_effective'] + expected_gap) - df_merged['raw_value']
+            df_merged['corrected_value'] = df_merged['ref_effective'] + expected_gap
+
+            df = df_sorted.copy()
+            for idx, row in df_merged.iterrows():
+                df.loc[df['Tab_DateTime'] == row['Tab_DateTime'], 'corrected_value'] = row['corrected_value']
+            df['corrected_value'].fillna(df['effective_value'], inplace=True)
+
         df["Tab_DateTime"] = df["Tab_DateTime"].astype(str)
         data_records = df[["Tab_DateTime", "Station", "raw_value", "corrected_value"]].to_dict(orient="records")
 
@@ -600,6 +630,13 @@ def lambda_handler_commit(event, context):
     correction_type, err = _validate_correction_type(body.get("correction_type", "offset"))
     if err:
         return err
+
+    reference_station_raw = body.get("reference_station")
+    reference_station = None
+    if reference_station_raw and reference_station_raw != "none":
+        if reference_station_raw not in ALLOWED_REFERENCE_STATIONS:
+            return _err(400, f"reference_station must be one of: {sorted(ALLOWED_REFERENCE_STATIONS)}")
+        reference_station = reference_station_raw
 
     try:
         # --- Offset Mode ---
@@ -705,6 +742,58 @@ def lambda_handler_commit(event, context):
                 "end_datetime": end_dt.isoformat(),
             })
 
+        # --- Relative Mode ---
+        elif correction_type == 'relative':
+            if not reference_station:
+                return _err(400, "relative mode requires reference_station")
+
+            try:
+                expected_gap = float(body.get("expected_gap", 0.0))
+            except (TypeError, ValueError):
+                return _err(400, "expected_gap must be a number")
+            if not np.isfinite(expected_gap):
+                return _err(400, "expected_gap must be finite")
+
+            relative_sql = text(f"""
+                UPDATE "Monitors_info2" AS target_m
+                SET "Calibration_Offset" = (
+                    (CAST(ref_m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(ref_m."Calibration_Offset" AS FLOAT), 0) + :expected_gap)
+                    - CAST(target_m."Tab_Value_mDepthC1" AS FLOAT)
+                )
+                FROM "Monitors_info2" AS ref_m
+                JOIN "Locations" AS target_l ON target_m."Tab_TabularTag" = target_l."Tab_TabularTag"
+                JOIN "Locations" AS ref_l ON ref_m."Tab_TabularTag" = ref_l."Tab_TabularTag"
+                WHERE target_l."Station" = :station
+                  AND ref_l."Station" = :reference_station
+                  AND target_m."Tab_DateTime" = ref_m."Tab_DateTime"
+                  AND target_m."Tab_DateTime" >= :start_dt
+                  AND target_m."Tab_DateTime" <= :end_dt
+            """)
+
+            with engine.begin() as conn:
+                result = conn.execute(relative_sql, {
+                    "station": station,
+                    "reference_station": reference_station,
+                    "start_dt": start_dt.isoformat(),
+                    "end_dt": end_dt.isoformat(),
+                    "expected_gap": expected_gap,
+                })
+                rows_updated = result.rowcount
+
+            logger.info(f"[OK] Committed relative calibration for {station} vs {reference_station}")
+            _invalidate_redis_cache()
+
+            return _ok({
+                "success": True,
+                "station": station,
+                "correction_type": "relative",
+                "reference_station": reference_station,
+                "expected_gap": expected_gap,
+                "rows_updated": rows_updated,
+                "start_datetime": start_dt.isoformat(),
+                "end_datetime": end_dt.isoformat(),
+            })
+
     except ValueError as ve:
         logger.error(f"[ERROR] commit_correction validation: {ve}")
         return _err(422, str(ve))
@@ -760,44 +849,100 @@ def lambda_handler_suggest(event, context):
         return err
 
     try:
-        # Fetch stable windows: before (12h before start) and after (12h after end)
-        before_data, after_data = _fetch_stable_window_data(station, start_dt, end_dt)
+        reference_station = body.get("reference_station")
 
-        if before_data.empty or after_data.empty:
-            return _err(
-                422,
-                "Insufficient data to detect shift: need stable data 12 hours before and after the correction window"
+        # Relative mode with drift detection
+        if reference_station and body.get("expected_gap") is not None:
+            target_df = _fetch_raw(station, start_dt, end_dt)
+            ref_df = _fetch_raw(reference_station, start_dt, end_dt)
+
+            if target_df.empty or ref_df.empty:
+                return _err(404, f"Missing data for {station} or {reference_station} in window")
+
+            merged = target_df.merge(
+                ref_df[['Tab_DateTime', 'effective_value']].rename(columns={'effective_value': 'ref_val'}),
+                on='Tab_DateTime',
+                how='inner'
             )
 
-        # Calculate medians and IQR for each window
-        before_median, before_iqr = _calculate_window_stats(before_data)
-        after_median, after_iqr = _calculate_window_stats(after_data)
+            if merged.empty:
+                return _err(404, "No overlapping timestamps between stations")
 
-        if before_median is None or after_median is None:
-            return _err(422, "Could not calculate statistics for stable windows")
+            merged['delta'] = merged['effective_value'] - merged['ref_val']
 
-        # Suggested offset: the median difference (before - after)
-        # This represents the shift to correct for
-        suggested_offset = round(before_median - after_median, 4)
+            try:
+                expected_delta = float(body.get("expected_gap", 0.0))
+            except (TypeError, ValueError):
+                return _err(400, "expected_gap must be a number")
 
-        # Confidence based on IQR consistency
-        # Low IQR in both windows = high confidence (stable plateaus)
-        # High IQR in either window = low confidence (noisy data)
-        avg_iqr = (before_iqr + after_iqr) / 2.0
-        confidence_threshold = 0.05  # Threshold for IQR stability
-        confidence = "high" if avg_iqr < confidence_threshold else "medium" if avg_iqr < 0.15 else "low"
+            merged['deviation'] = (merged['delta'] - expected_delta).abs()
 
-        return _ok({
-            "station": station,
-            "suggested_offset": suggested_offset,
-            "confidence": confidence,
-            "method": "12_hour_stable_window",
-            "before_median": round(before_median, 4),
-            "after_median": round(after_median, 4),
-            "average_iqr": round(avg_iqr, 4),
-            "samples_before": len(before_data),
-            "samples_after": len(after_data),
-        })
+            DRIFT_THRESHOLD = 0.05
+            drifted = merged[merged['deviation'] > DRIFT_THRESHOLD]
+
+            if drifted.empty:
+                return _ok({
+                    "station": station,
+                    "status": "no_drift_detected",
+                    "reference_station": reference_station,
+                    "expected_gap": expected_delta,
+                    "message": "Delta between stations matches expected gap throughout window"
+                })
+
+            first_drift_ts = drifted['Tab_DateTime'].min()
+            last_drift_ts = drifted['Tab_DateTime'].max()
+
+            return _ok({
+                "station": station,
+                "drift_detected": True,
+                "reference_station": reference_station,
+                "expected_gap": expected_delta,
+                "malfunction_start": first_drift_ts.isoformat(),
+                "malfunction_end": last_drift_ts.isoformat(),
+                "drift_samples": len(drifted),
+                "max_deviation": float(drifted['deviation'].max()),
+                "message": f"Drift detected: {first_drift_ts} to {last_drift_ts}"
+            })
+        else:
+            # Fall back to existing 12-hour stable window algorithm (keep original code)
+            # Fetch stable windows: before (12h before start) and after (12h after end)
+            before_data, after_data = _fetch_stable_window_data(station, start_dt, end_dt)
+
+            if before_data.empty or after_data.empty:
+                return _err(
+                    422,
+                    "Insufficient data to detect shift: need stable data 12 hours before and after the correction window"
+                )
+
+            # Calculate medians and IQR for each window
+            before_median, before_iqr = _calculate_window_stats(before_data)
+            after_median, after_iqr = _calculate_window_stats(after_data)
+
+            if before_median is None or after_median is None:
+                return _err(422, "Could not calculate statistics for stable windows")
+
+            # Suggested offset: the median difference (before - after)
+            # This represents the shift to correct for
+            suggested_offset = round(before_median - after_median, 4)
+
+            # Confidence based on IQR consistency
+            # Low IQR in both windows = high confidence (stable plateaus)
+            # High IQR in either window = low confidence (noisy data)
+            avg_iqr = (before_iqr + after_iqr) / 2.0
+            confidence_threshold = 0.05  # Threshold for IQR stability
+            confidence = "high" if avg_iqr < confidence_threshold else "medium" if avg_iqr < 0.15 else "low"
+
+            return _ok({
+                "station": station,
+                "suggested_offset": suggested_offset,
+                "confidence": confidence,
+                "method": "12_hour_stable_window",
+                "before_median": round(before_median, 4),
+                "after_median": round(after_median, 4),
+                "average_iqr": round(avg_iqr, 4),
+                "samples_before": len(before_data),
+                "samples_after": len(after_data),
+            })
 
     except Exception as e:
         logger.error(f"[ERROR] suggest_correction: {e}", exc_info=True)

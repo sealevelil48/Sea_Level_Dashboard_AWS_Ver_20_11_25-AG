@@ -221,6 +221,7 @@ const DashboardFilters = ({
                     >
                       <option value="offset">Vertical Offset</option>
                       <option value="interpolate">Interpolate Gap (Snip)</option>
+                      <option value="relative">Relative Gap Calibration</option>
                     </Form.Select>
                     {filters.calibrationCorrectionType === 'interpolate' && (
                       <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
@@ -229,62 +230,98 @@ const DashboardFilters = ({
                     )}
                   </Form.Group>
 
-                  {filters.calibrationCorrectionType === 'offset' && (
-                    <>
-                      <Form.Group className="mb-2">
-                        <Form.Label className="small mb-1" style={{ fontSize: '0.7rem' }}>
-                          Offset Adjustment (metres)
-                        </Form.Label>
-                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                          <input
-                            type="range"
-                            min="-10"
-                            max="10"
-                            step="0.01"
-                            value={filters.calibrationOffset ?? 0}
-                            onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value))}
-                            style={{
-                              flex: 1,
-                              height: '6px',
-                              cursor: 'pointer',
-                            }}
-                            title="Drag to adjust offset"
-                          />
-                          <div style={{
-                            minWidth: '50px',
-                            textAlign: 'center',
-                            fontSize: '0.75rem',
-                            fontWeight: 'bold',
-                            color: '#00ff99',
-                            backgroundColor: 'rgba(0,0,0,0.3)',
-                            padding: '4px 6px',
-                            borderRadius: '3px',
-                            border: '1px solid #2a3f5f'
-                          }}>
-                            {filters.calibrationOffset >= 0 ? '+' : ''}{(filters.calibrationOffset ?? 0).toFixed(3)}m
-                          </div>
-                        </div>
-                        <small className="text-muted d-block mt-1" style={{ fontSize: '0.65rem' }}>
-                          Drag slider for real-time preview
-                        </small>
-                      </Form.Group>
-                    </>
+                  {filters.calibrationCorrectionType === 'relative' && (
+                    <Form.Group className="mb-2">
+                      <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                        Expected Gap (metres)
+                      </Form.Label>
+                      <Form.Control
+                        type="number"
+                        size="sm"
+                        step="0.001"
+                        min="-10"
+                        max="10"
+                        value={filters.calibrationExpectedGap ?? 0}
+                        onChange={(e) => onFilterChange('calibrationExpectedGap', parseFloat(e.target.value) || 0)}
+                        style={{ fontSize: '0.75rem' }}
+                      />
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        ℹ️ Target will be adjusted so: Target ≈ Reference + Gap
+                      </small>
+                    </Form.Group>
                   )}
 
-                  <Form.Group className="mb-2">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
-                      Compare with Station
-                    </Form.Label>
-                    <CustomDropdown
-                      value={filters.calibrationReference || 'none'}
-                      onChange={(value) => onFilterChange('calibrationReference', value)}
-                      options={[
-                        { value: 'none',      label: 'None' },
-                        { value: 'Ashdod',    label: 'Ashdod' },
-                        { value: 'Ashkelon',  label: 'Ashkelon' },
-                      ]}
-                    />
-                  </Form.Group>
+                  {filters.calibrationCorrectionType === 'offset' && (
+                    <Form.Group className="mb-2">
+                      <Form.Label className="small mb-1" style={{ fontSize: '0.7rem' }}>
+                        Offset Adjustment (metres)
+                      </Form.Label>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
+                        <Form.Control
+                          type="number"
+                          size="sm"
+                          step="0.001"
+                          min="-10"
+                          max="10"
+                          value={filters.calibrationOffset ?? 0}
+                          onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value) || 0)}
+                          style={{ fontSize: '0.75rem', flex: 0.35 }}
+                          placeholder="0.000"
+                        />
+                        <input
+                          type="range"
+                          min="-10"
+                          max="10"
+                          step="0.001"
+                          value={filters.calibrationOffset ?? 0}
+                          onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value))}
+                          style={{
+                            flex: 1,
+                            height: '6px',
+                            cursor: 'pointer',
+                          }}
+                          title="Drag to adjust offset"
+                        />
+                        <div style={{
+                          minWidth: '50px',
+                          textAlign: 'center',
+                          fontSize: '0.75rem',
+                          fontWeight: 'bold',
+                          color: '#00ff99',
+                          backgroundColor: 'rgba(0,0,0,0.3)',
+                          padding: '4px 6px',
+                          borderRadius: '3px',
+                          border: '1px solid #2a3f5f'
+                        }}>
+                          {filters.calibrationOffset >= 0 ? '+' : ''}{(filters.calibrationOffset ?? 0).toFixed(3)}m
+                        </div>
+                      </div>
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        Drag slider or type exact value
+                      </small>
+                    </Form.Group>
+                  )}
+
+                  {(() => {
+                    const stationOptions = [
+                      { value: 'none', label: 'None' },
+                      ...(stations || [])
+                        .filter(s => s !== calibrationHook?.targetStation && s !== 'All Stations')
+                        .map(s => ({ value: s, label: s }))
+                    ];
+                    return (
+                      <Form.Group className="mb-2">
+                        <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                          Compare with Station
+                        </Form.Label>
+                        <CustomDropdown
+                          value={filters.calibrationReference || 'none'}
+                          onChange={(value) => onFilterChange('calibrationReference', value)}
+                          options={stationOptions}
+                        />
+                      </Form.Group>
+                    );
+                  })()}
 
                   <Button
                     variant="outline-info"

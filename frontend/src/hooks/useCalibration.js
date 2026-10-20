@@ -46,9 +46,12 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
       // Only include offset for 'offset' mode
       if (filterValues.calibrationCorrectionType === 'offset') {
         params.offset = filterValues.calibrationOffset;
+      } else if (filterValues.calibrationCorrectionType === 'relative') {
+        params.reference_station = filterValues.calibrationReference;
+        params.expected_gap = filterValues.calibrationExpectedGap ?? 0.0;
       }
-      // Include reference station if not 'none'
-      if (filterValues.calibrationReference !== 'none') {
+      // Include reference station if not 'none' and not relative mode
+      if (filterValues.calibrationReference !== 'none' && filterValues.calibrationCorrectionType !== 'relative') {
         params.reference_station = filterValues.calibrationReference;
       }
       const result = await apiService.previewCalibration(params);
@@ -75,12 +78,26 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     setIsLoadingSuggest(true);
     setError(null);
     try {
-      const result = await apiService.suggestCalibration({
+      const params = {
         station: targetStation,
         start_datetime: filterValues.calibrationStart,
         end_datetime: filterValues.calibrationEnd,
-      });
-      if (result?.suggested_offset != null) {
+      };
+      // If reference mode, include reference and gap
+      if (filterValues.calibrationCorrectionType === 'relative') {
+        params.reference_station = filterValues.calibrationReference;
+        params.expected_gap = filterValues.calibrationExpectedGap ?? 0.0;
+      }
+      const result = await apiService.suggestCalibration(params);
+
+      if (result?.drift_detected && result?.malfunction_start && result?.malfunction_end) {
+        // Auto-snap to drift window
+        const startISO = new Date(result.malfunction_start).toISOString().slice(0, 16);
+        const endISO = new Date(result.malfunction_end).toISOString().slice(0, 16);
+        updateFilter('calibrationStart', startISO);
+        updateFilter('calibrationEnd', endISO);
+        console.info(`[Calibration] Drift detected: ${result.malfunction_start} to ${result.malfunction_end}`);
+      } else if (result?.suggested_offset != null) {
         updateFilter('calibrationOffset', result.suggested_offset);
         // Log additional stats from smart suggest algorithm
         const msg = `Suggested: ${result.suggested_offset}m (${result.confidence} confidence, ${result.before_samples} before / ${result.after_samples} after samples)`;
@@ -112,6 +129,9 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
       // Only include offset for 'offset' mode
       if (filterValues.calibrationCorrectionType === 'offset') {
         params.offset = filterValues.calibrationOffset;
+      } else if (filterValues.calibrationCorrectionType === 'relative') {
+        params.reference_station = filterValues.calibrationReference;
+        params.expected_gap = filterValues.calibrationExpectedGap ?? 0.0;
       }
       const result = await apiService.commitCalibration(params);
       setCommitResult(result);

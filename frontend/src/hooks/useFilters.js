@@ -15,7 +15,8 @@ const defaultFilters = {
   calibrationEnd: null,                // string | null
   calibrationOffset: 0.0,              // metres, float
   calibrationReference: 'none',        // 'none' | 'Ashdod' | 'Ashkelon'
-  calibrationCorrectionType: 'offset', // 'offset' | 'interpolate'
+  calibrationCorrectionType: 'offset', // 'offset' | 'interpolate' | 'relative'
+  calibrationExpectedGap: null,        // metres, float | null — only used in relative mode
   calibrationPreviewData: null,        // API response or null
 };
 
@@ -48,6 +49,7 @@ export const useFilters = () => {
       calibrationOffset: filters.calibrationOffset,
       calibrationReference: filters.calibrationReference,
       calibrationCorrectionType: filters.calibrationCorrectionType,
+      calibrationExpectedGap: filters.calibrationExpectedGap ?? 0.0,
     };
   }, [filters]);
 
