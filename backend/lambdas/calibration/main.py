@@ -849,7 +849,12 @@ def lambda_handler_suggest(event, context):
         return err
 
     try:
-        reference_station = body.get("reference_station")
+        reference_station_raw = body.get("reference_station")
+        reference_station = None
+        if reference_station_raw and reference_station_raw != "none":
+            if reference_station_raw not in ALLOWED_REFERENCE_STATIONS:
+                return _err(400, f"reference_station must be one of: {sorted(ALLOWED_REFERENCE_STATIONS)}")
+            reference_station = reference_station_raw
 
         # Relative mode with drift detection
         if reference_station and body.get("expected_gap") is not None:
