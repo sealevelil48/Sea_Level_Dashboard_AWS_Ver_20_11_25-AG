@@ -52,8 +52,8 @@ class PointType(TypeDecorator):
 class OptimizedDatabaseManager:
     def __init__(self):
         # Enhanced connection pool settings
-        self.POOL_SIZE = 20
-        self.MAX_OVERFLOW = 10
+        self.POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '10'))
+        self.MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', '5'))
         self.POOL_TIMEOUT = 30
         self.POOL_RECYCLE = 3600
         self.POOL_PRE_PING = True
@@ -105,6 +105,8 @@ class OptimizedDatabaseManager:
     
     def _initialize_redis(self):
         """Initialize Redis cache"""
+        if os.getenv("REDIS_ENABLED", "true").lower() == "false":
+            return  # e.g. on AWS Lambda (ElastiCache not deployed)
         if not REDIS_AVAILABLE:
             return
             
@@ -143,7 +145,7 @@ class OptimizedDatabaseManager:
         try:
             metadata = MetaData()
             
-            self.M = Table('Monitors_info2', metadata,
+            self.M = Table(os.getenv('MONITORS_RELATION', 'Monitors_effective'), metadata,
                           Column('Tab_TabularTag', String),
                           autoload_with=self.engine,
                           extend_existing=True)

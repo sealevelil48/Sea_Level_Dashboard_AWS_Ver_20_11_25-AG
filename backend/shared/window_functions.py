@@ -64,7 +64,7 @@ class WindowFunctionQueries:
                     CAST(m."Tab_Value_mDepthC1" AS FLOAT) as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m",
                     ROW_NUMBER() OVER (PARTITION BY l."Station" ORDER BY m."Tab_DateTime") as row_num
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
         """
@@ -120,7 +120,7 @@ class WindowFunctionQueries:
                     l."Station",
                     CAST(m."Tab_Value_mDepthC1" AS FLOAT) as value,
                     ROW_NUMBER() OVER (PARTITION BY l."Station" ORDER BY m."Tab_DateTime") - 1 as x_index
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
         """
@@ -199,7 +199,7 @@ class WindowFunctionQueries:
                     m."Tab_DateTime",
                     l."Station" as station1,
                     CAST(m."Tab_Value_mDepthC1" AS FLOAT) as value1
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = :station1
         """
@@ -217,7 +217,7 @@ class WindowFunctionQueries:
                     m."Tab_DateTime",
                     l."Station" as station2,
                     CAST(m."Tab_Value_mDepthC1" AS FLOAT) as value2
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = :station2
         """
@@ -294,7 +294,7 @@ class WindowFunctionQueries:
                         PARTITION BY l."Station"
                         ORDER BY m."Tab_DateTime"
                     ) as previous_timestamp
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
         """
@@ -363,7 +363,7 @@ class CommonCTEs:
                     CAST(m."Tab_Value_mDepthC1" AS FLOAT) as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m",
                     ROW_NUMBER() OVER (PARTITION BY l."Station" ORDER BY m."Tab_DateTime") as row_num
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE m."Tab_Value_mDepthC1" IS NOT NULL
         """

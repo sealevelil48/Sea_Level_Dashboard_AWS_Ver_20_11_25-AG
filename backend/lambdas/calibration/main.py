@@ -1,970 +1,553 @@
 # backend/lambdas/calibration/main.py
-# Three handlers: preview (in-memory), commit (SQL-based), suggest (12-hour stable windows)
-#
-# Phase 2 Features:
-#   - lambda_handler_preview: Both offset and interpolate modes (in-memory)
-#   - lambda_handler_commit: SQL-based interpolation + offset mode (database UPDATE)
-#   - lambda_handler_suggest: 12-hour stable window algorithm (before/after medians)
-#
-# Security controls applied (see inline comments):
-#   1. All three endpoints require a correct X-Calibration-Key header.
-#   2. station / reference_station are checked against an allowlist.
-#   3. start_datetime / end_datetime are validated with datetime.fromisoformat()
-#      and must satisfy start < end with a maximum 2-year window.
-#   4. Exception details are logged server-side only; clients receive a generic
-#      "Internal server error" message.
+"""
+Calibration correction service — admin only.
+
+Handlers: preview (read-only), suggest (read-only), commit (write), revert (write), history (read).
+
+Data model (migration 003_calibration_layer.sql):
+  * Raw data in "Monitors_info2" is never modified (on AWS it is a replica of on-prem).
+  * Corrections live in "Calibration_Offsets"; readers use the "Monitors_effective" view.
+  * Every commit/revert writes "Calibration_Audit" + "Calibration_Audit_Rows" (previous
+    offsets) in the SAME transaction as the change, so any commit can be undone.
+
+Security:
+  * Caller identity comes from the Cognito authorizer (API Gateway) or the local
+    FastAPI adapter — see shared/auth.py. Every handler requires an admin.
+  * station / reference_station are checked against an allowlist; datetimes are parsed
+    and bounded (max 2-year window); all SQL uses bind parameters.
+  * Commits are idempotent: the client sends request_id (UUID); a repeated request_id
+    returns the original result instead of applying the correction twice.
+  * Exception details are logged server-side only.
+"""
 import json
 import logging
-import sys
 import os
 import re
+import sys
+import uuid
+from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
-from datetime import datetime, timezone, timedelta
 
-# Add paths for shared modules (mirrors pattern in get_data/main.py)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.join(current_dir, '..', '..')
-sys.path.insert(0, backend_dir)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
+from shared.auth import identity_from_event  # noqa: E402
 
 try:
     from shared.database import engine
     from sqlalchemy import text
-    DATABASE_AVAILABLE = True
-    print("[OK] Database modules imported successfully for calibration")
-except ImportError as e:
-    print(f"[ERROR] Database import error in calibration: {e}")
-    DATABASE_AVAILABLE = False
+    DATABASE_AVAILABLE = engine is not None
+except ImportError as e:  # pragma: no cover
+    logging.getLogger(__name__).error(f"Database import error in calibration: {e}")
+    engine, DATABASE_AVAILABLE = None, False
 
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    redis = None
-
-try:
-    from security import SecurityUtils
-    SECURITY_AVAILABLE = True
-except ImportError:
-    SECURITY_AVAILABLE = False
-
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-CORS_HEADERS = {
-    "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
-}
+JSON_HEADERS = {"Content-Type": "application/json", "Cache-Control": "no-store"}
 
-# ---------------------------------------------------------------------------
-# Security: station allowlist
-#
-# The static set is the sole authoritative list — it matches FALLBACK_STATIONS
-# in the frontend and is never overwritten.
-#
-# The DB refresh (opt-in, controlled by CALIBRATION_ALLOW_DB_STATIONS=true)
-# may ADD stations, but only after each candidate passes the same format regex
-# used in _validate_station.  Any name that fails the regex is discarded and
-# logged as an anomaly.  The total set is capped at _MAX_STATION_COUNT.
-# ---------------------------------------------------------------------------
-_STATION_NAME_RE = re.compile(r'^[a-zA-Z0-9 \-_]+$')
-_MAX_STATION_COUNT = 50
-
-_STATIC_ALLOWED_STATIONS = frozenset({
-    "Acre", "Ashdod", "Ashkelon", "Eilat", "Haifa", "Yafo"
-})
-_ALLOWED_STATIONS = set(_STATIC_ALLOWED_STATIONS)
-
-def _refresh_station_allowlist():
-    """
-    Optionally expand the allowlist from the Locations table.
-    Only runs when CALIBRATION_ALLOW_DB_STATIONS=true is set explicitly.
-    Each candidate name is validated against _STATION_NAME_RE before
-    being admitted; rejects are logged as anomalies.
-    """
-    if os.getenv("CALIBRATION_ALLOW_DB_STATIONS", "false").lower() != "true":
-        return
-    if not DATABASE_AVAILABLE or not engine:
-        return
-    try:
-        with engine.connect() as conn:
-            result = conn.execute(text('SELECT DISTINCT "Station" FROM "Locations"'))
-            raw_names = {row[0] for row in result.fetchall() if row[0]}
-
-        admitted, rejected = [], []
-        for name in raw_names:
-            if (
-                isinstance(name, str)
-                and _STATION_NAME_RE.match(name)
-                and len(name) <= 50
-            ):
-                admitted.append(name)
-            else:
-                rejected.append(name)
-
-        if rejected:
-            # Sanitize before logging: repr() escapes control chars/newlines;
-            # truncate each name and cap the list to prevent log flooding.
-            safe_rejected = [repr(n)[:80] for n in list(rejected)[:20]]
-            logger.warning(
-                "[SECURITY] DB station allowlist: rejected %d name(s) that failed "
-                "format check: %s",
-                len(rejected), safe_rejected
-            )
-
-        new_stations = set(admitted) - _STATIC_ALLOWED_STATIONS
-        if new_stations:
-            safe_new = [repr(n)[:80] for n in sorted(new_stations)[:20]]
-            logger.warning(
-                "[SECURITY] DB station allowlist: adding %d name(s) beyond the static "
-                "set (review these): %s",
-                len(new_stations), safe_new
-            )
-
-        candidate_set = _STATIC_ALLOWED_STATIONS | set(admitted)
-        if len(candidate_set) > _MAX_STATION_COUNT:
-            logger.error(
-                f"[SECURITY] DB station allowlist exceeds cap ({_MAX_STATION_COUNT}); "
-                "using static list only"
-            )
-            return
-
-        _ALLOWED_STATIONS.update(set(admitted))
-        logger.info(f"[OK] Station allowlist refreshed: {sorted(_ALLOWED_STATIONS)}")
-
-    except Exception as exc:
-        logger.warning(f"[WARN] Could not refresh station allowlist: {exc}")
-
-_refresh_station_allowlist()
-
-# Reference stations that may be overlaid for comparison
-ALLOWED_REFERENCE_STATIONS = _ALLOWED_STATIONS
-
-# Maximum allowed correction window: 2 years
+_STATION_NAME_RE = re.compile(r'^[a-zA-Z0-9 \-_]{1,50}$')
+_ALLOWED_STATIONS = frozenset(
+    s.strip() for s in os.getenv("CALIBRATION_STATIONS", "Acre,Ashdod,Ashkelon,Eilat,Haifa,Yafo").split(",") if s.strip()
+)
 MAX_WINDOW_DAYS = 730
+MAX_OFFSET_M = 10.0
+DRIFT_THRESHOLD_M = float(os.getenv("CALIBRATION_DRIFT_THRESHOLD", "0.05"))
+STABLE_WINDOW_HOURS = 12
 
 # ---------------------------------------------------------------------------
-# Security: API key authentication
-# Set CALIBRATION_API_KEY in the environment (or AWS Secrets Manager for prod).
-# If the variable is absent the endpoints are locked — no default is accepted.
-# ---------------------------------------------------------------------------
-_CALIBRATION_API_KEY = os.getenv("CALIBRATION_API_KEY", "")
-
-def _check_auth(event):
-    """
-    Return None if the request is authenticated, or an error response dict.
-    Checks the X-Calibration-Key header (case-insensitive lookup across
-    both FastAPI header dict and raw API-Gateway multiValueHeaders).
-    """
-    if not _CALIBRATION_API_KEY:
-        logger.error("[SECURITY] CALIBRATION_API_KEY env var is not set — all calibration requests blocked")
-        return _err(503, "Calibration service not configured")
-
-    headers = event.get("headers") or {}
-    # FastAPI lowercases header names; API Gateway may not
-    key_provided = (
-        headers.get("x-calibration-key")
-        or headers.get("X-Calibration-Key")
-        or headers.get("X-CALIBRATION-KEY")
-        or ""
-    )
-    if not key_provided or key_provided != _CALIBRATION_API_KEY:
-        logger.warning("[SECURITY] Calibration request rejected: invalid or missing X-Calibration-Key")
-        return _err(401, "Unauthorized")
-    return None
-
-# ---------------------------------------------------------------------------
-# Shared helpers
+# Response helpers / validation
 # ---------------------------------------------------------------------------
 
 def _ok(data):
-    return {"statusCode": 200, "headers": CORS_HEADERS, "body": json.dumps(data, default=str)}
+    return {"statusCode": 200, "headers": JSON_HEADERS, "body": json.dumps(data, default=str)}
+
 
 def _err(status, msg):
-    return {"statusCode": status, "headers": CORS_HEADERS, "body": json.dumps({"error": msg})}
+    return {"statusCode": status, "headers": JSON_HEADERS, "body": json.dumps({"error": msg})}
+
+
+class _BadRequest(Exception):
+    def __init__(self, status, msg):
+        super().__init__(msg)
+        self.status, self.msg = status, msg
+
+
+def _require_admin(event):
+    ident = identity_from_event(event)
+    if ident is None:
+        return None, _err(401, "Sign-in required")
+    if not ident.is_admin:
+        logger.warning("[SECURITY] Calibration denied for non-admin user sub=%s", ident.sub)
+        return None, _err(403, "Calibration is restricted to administrators")
+    return ident, None
+
 
 def _parse_body(event):
-    body = event.get("body", {})
+    body = event.get("body") or {}
     if isinstance(body, str):
-        body = json.loads(body)
-    return body or {}
+        try:
+            body = json.loads(body)
+        except json.JSONDecodeError:
+            raise _BadRequest(400, "Invalid JSON body")
+    if not isinstance(body, dict):
+        raise _BadRequest(400, "JSON object expected")
+    return body
 
-def _validate_station(station):
-    """
-    Return (cleaned_name, error_response) — error_response is None on success.
-    Uses the existing SecurityUtils.validate_station_name pattern from security.py
-    and also checks against the server-side allowlist.
-    """
-    if not isinstance(station, str) or not station.strip():
-        return None, _err(400, "station must be a non-empty string")
-    station = station.strip()
-    if SECURITY_AVAILABLE and not SecurityUtils.validate_station_name(station):
-        return None, _err(400, "station contains invalid characters")
-    elif not re.match(r'^[a-zA-Z0-9 \-_]+$', station) or len(station) > 50:
-        return None, _err(400, "station contains invalid characters")
-    if station not in _ALLOWED_STATIONS:
-        return None, _err(400, f"Unknown station: '{station}'")
-    return station, None
 
-def _validate_datetime(dt_str, field_name):
-    """
-    Return (datetime_object, error_response).
-    Accepts ISO-8601 strings (with or without seconds).
-    """
-    if not isinstance(dt_str, str) or not dt_str.strip():
-        return None, _err(400, f"{field_name} must be a non-empty string")
+def _station(value, field="station"):
+    if not isinstance(value, str) or not _STATION_NAME_RE.match(value.strip()):
+        raise _BadRequest(400, f"{field} contains invalid characters")
+    value = value.strip()
+    if value not in _ALLOWED_STATIONS:
+        raise _BadRequest(400, f"Unknown {field}: '{value}'")
+    return value
+
+
+def _optional_reference(body, station):
+    raw = body.get("reference_station")
+    if not raw or raw == "none":
+        return None
+    ref = _station(raw, "reference_station")
+    if ref == station:
+        raise _BadRequest(400, "reference_station must differ from station")
+    return ref
+
+
+def _dt(value, field):
+    if not isinstance(value, str) or not value.strip():
+        raise _BadRequest(400, f"{field} must be a non-empty string")
     try:
-        # datetime-local inputs produce "YYYY-MM-DDTHH:MM" (no seconds); fromisoformat handles both
-        dt = datetime.fromisoformat(dt_str.strip())
+        dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
-        return None, _err(400, f"{field_name} must be a valid ISO-8601 datetime (e.g. 2026-10-08T15:13:00)")
-    # Sanity check: reasonable year range
-    if dt.year < 2000 or dt.year > 2100:
-        return None, _err(400, f"{field_name} year must be between 2000 and 2100")
-    return dt, None
+        raise _BadRequest(400, f"{field} must be ISO-8601 (e.g. 2026-10-08T15:13:00)")
+    if dt.tzinfo is not None:  # DB stores naive local timestamps
+        dt = dt.replace(tzinfo=None)
+    if not 2000 <= dt.year <= 2100:
+        raise _BadRequest(400, f"{field} year must be between 2000 and 2100")
+    return dt
 
-def _validate_window(start_dt, end_dt):
-    """
-    Ensure start < end and window <= MAX_WINDOW_DAYS.
-    Uses timedelta comparison directly (not delta.days) to avoid the
-    sub-day truncation bug where timedelta(730 days, 1 hour).days == 730.
-    """
-    if start_dt >= end_dt:
-        return _err(400, "start_datetime must be earlier than end_datetime")
-    if (end_dt - start_dt) > timedelta(days=MAX_WINDOW_DAYS):
-        return _err(400, f"Correction window cannot exceed {MAX_WINDOW_DAYS} days")
-    return None
 
-def _validate_correction_type(correction_type):
-    """
-    Return (correction_type, error_response).
-    Validates that correction_type is either 'offset', 'interpolate', or 'relative'.
-    """
-    if not correction_type:
-        correction_type = 'offset'  # Default
-    if correction_type not in ('offset', 'interpolate', 'relative'):
-        return None, _err(400, "correction_type must be 'offset', 'interpolate', or 'relative'")
-    return correction_type, None
+def _window(body):
+    start, end = _dt(body.get("start_datetime"), "start_datetime"), _dt(body.get("end_datetime"), "end_datetime")
+    if start >= end:
+        raise _BadRequest(400, "start_datetime must be earlier than end_datetime")
+    if end - start > timedelta(days=MAX_WINDOW_DAYS):
+        raise _BadRequest(400, f"Correction window cannot exceed {MAX_WINDOW_DAYS} days")
+    return start, end
 
-def _fetch_raw(station, start_datetime, end_datetime):
+
+def _number(body, field, default=None, max_abs=MAX_OFFSET_M):
+    raw = body.get(field, default)
+    if raw is None:
+        raise _BadRequest(400, f"{field} is required")
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        raise _BadRequest(400, f"{field} must be a number")
+    if not np.isfinite(val):
+        raise _BadRequest(400, f"{field} must be finite")
+    if abs(val) > max_abs:
+        raise _BadRequest(400, f"{field} magnitude must be <= {max_abs} m")
+    return val
+
+
+def _correction_type(body):
+    ct = body.get("correction_type") or "offset"
+    if ct not in ("offset", "interpolate", "relative"):
+        raise _BadRequest(400, "correction_type must be 'offset', 'interpolate' or 'relative'")
+    return ct
+
+
+def _request_id(body):
+    rid = body.get("request_id")
+    if rid is None:
+        raise _BadRequest(400, "request_id (UUID) is required for commits")
+    try:
+        return str(uuid.UUID(str(rid)))
+    except ValueError:
+        raise _BadRequest(400, "request_id must be a UUID")
+
+# ---------------------------------------------------------------------------
+# Queries (all read from the corrected view)
+# ---------------------------------------------------------------------------
+
+_WINDOW_SQL = """
+    SELECT m."Tab_DateTime", l."Station", m."Tab_TabularTag",
+           m."Raw_mDepthC1"        AS raw_value,
+           m."Tab_Value_mDepthC1"  AS current_value
+    FROM "Monitors_effective" m
+    JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+    WHERE l."Station" = :station
+      AND m."Tab_DateTime" >= :start AND m."Tab_DateTime" <= :end
+      AND m."Tab_Value_mDepthC1" IS NOT NULL
+    ORDER BY m."Tab_DateTime"
+"""
+
+
+def _fetch_window(conn, station, start, end):
+    res = conn.execute(text(_WINDOW_SQL), {"station": station, "start": start, "end": end})
+    df = pd.DataFrame(res.fetchall(), columns=list(res.keys()))
+    if not df.empty:
+        df["Tab_DateTime"] = pd.to_datetime(df["Tab_DateTime"])
+        df[["raw_value", "current_value"]] = df[["raw_value", "current_value"]].astype(float)
+    return df
+
+
+def _boundaries(conn, station, start, end):
     """
-    Return DataFrame with columns: Tab_DateTime, Station, raw_value, effective_value.
-    station has already been validated; start/end are datetime objects
-    converted to ISO strings for the SQL bind parameter.
-    effective_value = raw_value + existing calibration offset (for seamless interpolation)
+    Anchor points for interpolation: the last good sample BEFORE the window and the first
+    sample AFTER it (current corrected values). Samples inside [start, end] are the ones
+    being replaced, so they must not be used as anchors.
     """
     sql = text("""
-        SELECT
-            m."Tab_DateTime",
-            l."Station",
-            CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value,
-            (CAST(m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0)) AS effective_value
-        FROM "Monitors_info2" m
-        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
-        WHERE l."Station" = :station
-          AND m."Tab_DateTime" >= :start_datetime
-          AND m."Tab_DateTime" <= :end_datetime
-        ORDER BY m."Tab_DateTime" ASC
-    """)
-    with engine.connect() as conn:
-        result = conn.execute(sql, {
-            "station": station,
-            "start_datetime": start_datetime.isoformat(),
-            "end_datetime": end_datetime.isoformat(),
-        })
-        rows = result.fetchall()
-        cols = list(result.keys())
-    return pd.DataFrame(rows, columns=cols)
-
-def _fetch_interpolation_boundaries(station, start_dt, end_dt):
-    """
-    Fetch the effective values at the boundaries of the correction window.
-    Returns the first data point before/at start_dt and the last data point before/at end_dt.
-    Uses effective_value (raw + existing offset) so interpolation seamlessly connects the visible lines.
-    Raises exception if boundaries not found.
-    """
-    sql = text("""
-        SELECT
-            (CAST(m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0)) AS effective_value,
-            m."Tab_DateTime",
-            'start' AS boundary
-        FROM "Monitors_info2" m
-        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
-        WHERE l."Station" = :station
-          AND m."Tab_DateTime" <= :start_dt
-        ORDER BY m."Tab_DateTime" DESC
-        LIMIT 1
-
+        (SELECT 'start' AS b, m."Tab_DateTime" AS t, m."Tab_Value_mDepthC1" AS v
+           FROM "Monitors_effective" m JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+          WHERE l."Station" = :station AND m."Tab_DateTime" < :start AND m."Tab_Value_mDepthC1" IS NOT NULL
+          ORDER BY m."Tab_DateTime" DESC LIMIT 1)
         UNION ALL
-
-        SELECT
-            (CAST(m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0)) AS effective_value,
-            m."Tab_DateTime",
-            'end' AS boundary
-        FROM "Monitors_info2" m
-        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
-        WHERE l."Station" = :station
-          AND m."Tab_DateTime" >= :end_dt
-        ORDER BY m."Tab_DateTime" ASC
-        LIMIT 1
+        (SELECT 'end' AS b, m."Tab_DateTime" AS t, m."Tab_Value_mDepthC1" AS v
+           FROM "Monitors_effective" m JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+          WHERE l."Station" = :station AND m."Tab_DateTime" > :end AND m."Tab_Value_mDepthC1" IS NOT NULL
+          ORDER BY m."Tab_DateTime" ASC LIMIT 1)
     """)
-    with engine.connect() as conn:
-        result = conn.execute(sql, {
-            "station": station,
-            "start_dt": start_dt.isoformat(),
-            "end_dt": end_dt.isoformat(),
-        })
-        rows = result.fetchall()
+    found = {row[0]: (pd.Timestamp(row[1]), float(row[2]))
+             for row in conn.execute(sql, {"station": station, "start": start, "end": end})}
+    if "start" not in found or "end" not in found:
+        raise _BadRequest(422, "Cannot interpolate: need data before the start and after the end of the window")
+    gap = max(start - found["start"][0].to_pydatetime(), found["end"][0].to_pydatetime() - end)
+    if gap > timedelta(days=1):
+        raise _BadRequest(422, "Cannot interpolate: nearest good sample is more than 1 day from the window edge")
+    return found["start"], found["end"]
 
-    start_val = None
-    end_val = None
-    for row in rows:
-        if row[2] == 'start':
-            start_val = float(row[0])
-        elif row[2] == 'end':
-            end_val = float(row[0])
 
-    if start_val is None or end_val is None:
-        raise ValueError("Cannot find data at correction window boundaries")
-
-    return start_val, end_val
-
-def _fetch_stable_window_data(station, start_dt, end_dt, hours_before=12, hours_after=12):
+def _compute_targets(conn, body, station, start, end, ctype, reference):
     """
-    Fetch data for three windows: before, correction, and after.
-    Used by suggest handler to compute medians and IQR.
-    Returns: (before_data, after_data) as Series of raw_value
+    Return (df, params) where df has Tab_TabularTag, Tab_DateTime, raw_value, current_value,
+    corrected_value. Shared by preview and commit so both always agree.
     """
-    before_start = start_dt - timedelta(hours=hours_before)
-    after_end = end_dt + timedelta(hours=hours_after)
+    df = _fetch_window(conn, station, start, end)
+    if df.empty:
+        raise _BadRequest(404, "No data found for the specified station and time window")
 
-    # Fetch before window: [before_start, start_dt)
-    sql_before = text("""
-        SELECT CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value
-        FROM "Monitors_info2" m
-        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
-        WHERE l."Station" = :station
-          AND m."Tab_DateTime" >= :before_start
-          AND m."Tab_DateTime" < :start_dt
-        ORDER BY m."Tab_DateTime" ASC
-    """)
+    if ctype == "offset":
+        offset = _number(body, "offset", default=0.0)
+        df["corrected_value"] = df["current_value"] + offset   # additive on top of existing corrections
+        params = {"offset": offset}
 
-    # Fetch after window: (end_dt, after_end]
-    sql_after = text("""
-        SELECT CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS raw_value
-        FROM "Monitors_info2" m
-        JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
-        WHERE l."Station" = :station
-          AND m."Tab_DateTime" > :end_dt
-          AND m."Tab_DateTime" <= :after_end
-        ORDER BY m."Tab_DateTime" ASC
-    """)
+    elif ctype == "interpolate":
+        (t0, start_val), (t1, end_val) = _boundaries(conn, station, start, end)
+        frac = (df["Tab_DateTime"] - t0).dt.total_seconds() / (t1 - t0).total_seconds()
+        df["corrected_value"] = start_val + frac.clip(0, 1) * (end_val - start_val)
+        params = {"start_value": start_val, "end_value": end_val,
+                  "anchor_start": t0.isoformat(), "anchor_end": t1.isoformat()}
 
-    with engine.connect() as conn:
-        before_result = conn.execute(sql_before, {
-            "station": station,
-            "before_start": before_start.isoformat(),
-            "start_dt": start_dt.isoformat(),
-        })
-        before_rows = [float(row[0]) for row in before_result.fetchall()]
-
-        after_result = conn.execute(sql_after, {
-            "station": station,
-            "end_dt": end_dt.isoformat(),
-            "after_end": after_end.isoformat(),
-        })
-        after_rows = [float(row[0]) for row in after_result.fetchall()]
-
-    before_series = pd.Series(before_rows) if before_rows else pd.Series(dtype=float)
-    after_series = pd.Series(after_rows) if after_rows else pd.Series(dtype=float)
-
-    return before_series, after_series
-
-def _calculate_window_stats(data_series):
-    """
-    Calculate median and interquartile range (IQR) for a data window.
-    Returns: (median, iqr) — IQR measures consistency/stability.
-    """
-    if data_series.empty:
-        return None, None
-
-    median = data_series.median()
-    q1 = data_series.quantile(0.25)
-    q3 = data_series.quantile(0.75)
-    iqr = q3 - q1
-
-    return median, iqr
-
-def _invalidate_redis_cache():
-    """
-    Flush Redis cache to force fresh data query on next request.
-    Allows dashboard to immediately reflect calibration corrections.
-    """
-    if not REDIS_AVAILABLE:
-        logger.warning("[WARN] Redis not available - cache invalidation skipped")
-        return
-
-    try:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-        r = redis.from_url(redis_url, decode_responses=True)
-
-        # Get all keys matching the data cache pattern
-        # The pattern depends on apiService.js getCacheKey() format
-        keys = r.keys("*data*") + r.keys("*stations*") + r.keys("*/api/*")
-
-        if keys:
-            deleted_count = r.delete(*keys)
-            logger.info(f"[OK] Redis cache invalidated: {deleted_count} keys deleted")
-        else:
-            logger.info("[OK] Redis cache already empty")
-
-        r.close()
-    except Exception as e:
-        logger.warning(f"[WARN] Could not invalidate Redis cache: {e}")
-
-# ---------------------------------------------------------------------------
-# Handler: Preview (in-memory, no DB writes)
-# ---------------------------------------------------------------------------
-
-def lambda_handler_preview(event, context):
-    """
-    Apply a proposed correction in-memory and return the preview data.
-    Supports two modes: vertical offset or linear interpolation (snip).
-    Optionally fetch a reference station for side-by-side comparison.
-
-    Request body: {
-        station: str,
-        start_datetime: str,   # ISO-8601, e.g. "2026-10-08T15:13:00"
-        end_datetime: str,
-        correction_type: str,  # 'offset' (default) or 'interpolate'
-        offset: float,         # Used only for 'offset' mode
-        reference_station?: str   # 'Ashdod' | 'Ashkelon' | omit
-    }
-    Headers: X-Calibration-Key: <key>
-    """
-    auth_err = _check_auth(event)
-    if auth_err:
-        return auth_err
-
-    if not DATABASE_AVAILABLE:
-        return _err(503, "Database not available")
-
-    body = _parse_body(event)
-
-    station, err = _validate_station(body.get("station"))
-    if err:
-        return err
-
-    start_dt, err = _validate_datetime(body.get("start_datetime"), "start_datetime")
-    if err:
-        return err
-    end_dt, err = _validate_datetime(body.get("end_datetime"), "end_datetime")
-    if err:
-        return err
-
-    err = _validate_window(start_dt, end_dt)
-    if err:
-        return err
-
-    correction_type, err = _validate_correction_type(body.get("correction_type", "offset"))
-    if err:
-        return err
-
-    reference_station_raw = body.get("reference_station")
-    reference_station = None
-    if reference_station_raw and reference_station_raw != "none":
-        if reference_station_raw not in ALLOWED_REFERENCE_STATIONS:
-            return _err(400, f"reference_station must be one of: {sorted(ALLOWED_REFERENCE_STATIONS)}")
-        reference_station = reference_station_raw
-
-    try:
-        df = _fetch_raw(station, start_dt, end_dt)
+    else:  # relative
+        if not reference:
+            raise _BadRequest(400, "relative mode requires reference_station")
+        gap = _number(body, "expected_gap", default=0.0)
+        ref = _fetch_window(conn, reference, start, end)
+        if ref.empty:
+            raise _BadRequest(404, f"No reference data for {reference} in window")
+        ref_vals = ref.set_index("Tab_DateTime")["current_value"]
+        df["corrected_value"] = df["Tab_DateTime"].map(ref_vals) + gap
+        df = df[df["corrected_value"].notna()].copy()       # only timestamps both stations share
         if df.empty:
-            return _err(404, "No data found for the specified station and time window")
+            raise _BadRequest(404, "No overlapping timestamps between stations")
+        params = {"reference_station": reference, "expected_gap": gap}
 
-        # Apply correction based on type
-        if correction_type == 'offset':
-            try:
-                offset = float(body.get("offset", 0.0))
-            except (TypeError, ValueError):
-                return _err(400, "offset must be a number")
-            if not np.isfinite(offset):
-                return _err(400, "offset must be a finite number")
-            df["corrected_value"] = df["raw_value"] + offset
-
-        elif correction_type == 'interpolate':
-            # Linear interpolation: connect start and end values
-            df_sorted = df.sort_values('Tab_DateTime')
-            df_sorted['Tab_DateTime'] = pd.to_datetime(df_sorted['Tab_DateTime'])
-
-            # Get start and end effective values (raw + existing offset)
-            # This ensures interpolation seamlessly connects the currently visible lines
-            start_rows = df_sorted[df_sorted['Tab_DateTime'] <= start_dt]
-            end_rows = df_sorted[df_sorted['Tab_DateTime'] >= end_dt]
-
-            if start_rows.empty or end_rows.empty:
-                return _err(422, "Cannot interpolate: missing start or end data points")
-
-            start_val = float(start_rows.iloc[-1]['effective_value'])
-            end_val = float(end_rows.iloc[0]['effective_value'])
-
-            # Calculate interpolation line
-            time_delta = (end_dt - start_dt).total_seconds()
-            value_delta = end_val - start_val
-
-            def interpolate(row):
-                # For rows strictly within the correction window (between start_dt and end_dt),
-                # replace with interpolated value (straight line from start to end)
-                # For rows outside the window, keep the effective value
-                if row['Tab_DateTime'] > start_dt and row['Tab_DateTime'] < end_dt:
-                    elapsed = (row['Tab_DateTime'] - start_dt).total_seconds()
-                    return start_val + (elapsed / time_delta) * value_delta
-                else:
-                    return row['effective_value']
-
-            df_sorted['Tab_DateTime'] = pd.to_datetime(df_sorted['Tab_DateTime'])
-            df_sorted['corrected_value'] = df_sorted.apply(interpolate, axis=1)
-            df = df_sorted
-
-        elif correction_type == 'relative':
-            if not reference_station:
-                return _err(400, "relative mode requires reference_station")
-
-            try:
-                expected_gap = float(body.get("expected_gap", 0.0))
-            except (TypeError, ValueError):
-                return _err(400, "expected_gap must be a number")
-            if not np.isfinite(expected_gap):
-                return _err(400, "expected_gap must be finite")
-
-            ref_df = _fetch_raw(reference_station, start_dt, end_dt)
-            if ref_df.empty:
-                return _err(404, f"No reference data for {reference_station} in window")
-
-            df_sorted = df.sort_values('Tab_DateTime')
-            df_merged = df_sorted.merge(
-                ref_df[['Tab_DateTime', 'effective_value']].rename(columns={'effective_value': 'ref_effective'}),
-                on='Tab_DateTime',
-                how='inner'
-            )
-
-            df_merged['offset_needed'] = (df_merged['ref_effective'] + expected_gap) - df_merged['raw_value']
-            df_merged['corrected_value'] = df_merged['ref_effective'] + expected_gap
-
-            df = df_sorted.copy()
-            for idx, row in df_merged.iterrows():
-                df.loc[df['Tab_DateTime'] == row['Tab_DateTime'], 'corrected_value'] = row['corrected_value']
-            df['corrected_value'].fillna(df['effective_value'], inplace=True)
-
-        df["Tab_DateTime"] = df["Tab_DateTime"].astype(str)
-        data_records = df[["Tab_DateTime", "Station", "raw_value", "corrected_value"]].to_dict(orient="records")
-
-        reference_records = []
-        if reference_station:
-            ref_df = _fetch_raw(reference_station, start_dt, end_dt)
-            if not ref_df.empty:
-                ref_df["Tab_DateTime"] = ref_df["Tab_DateTime"].astype(str)
-                ref_df = ref_df.rename(columns={"raw_value": "value"})
-                reference_records = ref_df[["Tab_DateTime", "Station", "value"]].to_dict(orient="records")
-
-        return _ok({
-            "station": station,
-            "correction_type": correction_type,
-            "offset_applied": float(body.get("offset", 0.0)) if correction_type == 'offset' else None,
-            "start_datetime": start_dt.isoformat(),
-            "end_datetime": end_dt.isoformat(),
-            "data": data_records,
-            "reference_data": reference_records,
-        })
-
-    except Exception as e:
-        logger.error(f"[ERROR] preview_correction: {e}", exc_info=True)
-        return _err(500, "Internal server error")
+    return df, params
 
 
-# ---------------------------------------------------------------------------
-# Handler: Commit (SQL-based UPDATE, supports both offset and interpolate)
-# ---------------------------------------------------------------------------
+def _reference_rows(conn, reference, start, end):
+    if not reference:
+        return []
+    ref = _fetch_window(conn, reference, start, end)
+    return [{"Tab_DateTime": str(t), "Station": reference, "value": v}
+            for t, v in zip(ref["Tab_DateTime"], ref["current_value"])]
 
-def lambda_handler_commit(event, context):
-    """
-    Persist the calibration correction to the database.
-    Supports two modes:
-      - 'offset': Additive vertical shift (COALESCE + increment)
-      - 'interpolate': SQL-based linear interpolation (calculates per-row offset)
-
-    Request body: {
-        station: str,
-        start_datetime: str,
-        end_datetime: str,
-        correction_type: str,  # 'offset' or 'interpolate'
-        offset: float          # Used only for 'offset' mode
-    }
-    Headers: X-Calibration-Key: <key>
-    """
-    auth_err = _check_auth(event)
-    if auth_err:
-        return auth_err
-
-    if not DATABASE_AVAILABLE:
-        return _err(503, "Database not available")
-
-    body = _parse_body(event)
-
-    station, err = _validate_station(body.get("station"))
-    if err:
-        return err
-
-    start_dt, err = _validate_datetime(body.get("start_datetime"), "start_datetime")
-    if err:
-        return err
-    end_dt, err = _validate_datetime(body.get("end_datetime"), "end_datetime")
-    if err:
-        return err
-
-    err = _validate_window(start_dt, end_dt)
-    if err:
-        return err
-
-    correction_type, err = _validate_correction_type(body.get("correction_type", "offset"))
-    if err:
-        return err
-
-    reference_station_raw = body.get("reference_station")
-    reference_station = None
-    if reference_station_raw and reference_station_raw != "none":
-        if reference_station_raw not in ALLOWED_REFERENCE_STATIONS:
-            return _err(400, f"reference_station must be one of: {sorted(ALLOWED_REFERENCE_STATIONS)}")
-        reference_station = reference_station_raw
-
+def _stage_new_offsets(conn, df):
+    """Bulk-load (tag, datetime, new_offset) into a transaction-scoped temp table."""
+    from psycopg2.extras import execute_values
+    conn.execute(text("""
+        CREATE TEMP TABLE _cal_new ON COMMIT DROP AS
+        SELECT "Tab_TabularTag" AS tag, "Tab_DateTime" AS dt, "Offset" AS off
+          FROM "Calibration_Offsets" WITH NO DATA
+    """))
+    values = list(zip(df["Tab_TabularTag"].tolist(),
+                      [d.to_pydatetime() for d in df["Tab_DateTime"]],
+                      df["new_offset"].astype(float).tolist()))
+    cur = conn.connection.dbapi_connection.cursor()
     try:
-        # --- Offset Mode ---
-        if correction_type == 'offset':
-            offset_raw = body.get("offset")
-            if offset_raw is None:
-                return _err(400, "offset is required for offset mode")
-            try:
-                offset = float(offset_raw)
-            except (TypeError, ValueError):
-                return _err(400, "offset must be a number")
-            if not np.isfinite(offset):
-                return _err(400, "offset must be a finite number")
-            if abs(offset) > 10.0:
-                return _err(400, "offset magnitude must be <= 10.0 metres")
-
-            # Additive UPDATE: accumulates corrections, never overwrites prior ones.
-            # Direct timestamp comparison — no DATE() cast — preserves sub-minute precision.
-            update_sql = text("""
-                UPDATE "Monitors_info2" AS m
-                SET "Calibration_Offset" = COALESCE("Calibration_Offset", 0) + :offset
-                FROM "Locations" AS l
-                WHERE m."Tab_TabularTag" = l."Tab_TabularTag"
-                  AND l."Station" = :station
-                  AND m."Tab_DateTime" >= :start_datetime
-                  AND m."Tab_DateTime" <= :end_datetime
-            """)
-
-            with engine.begin() as conn:
-                result = conn.execute(update_sql, {
-                    "offset": offset,
-                    "station": station,
-                    "start_datetime": start_dt.isoformat(),
-                    "end_datetime": end_dt.isoformat(),
-                })
-                rows_updated = result.rowcount
-
-            logger.info(f"[OK] Committed offset correction for {station} ({rows_updated} rows)")
-
-            # Invalidate Redis cache so dashboard fetches fresh corrected data immediately
-            _invalidate_redis_cache()
-
-            return _ok({
-                "success": True,
-                "station": station,
-                "correction_type": "offset",
-                "offset_applied": offset,
-                "rows_updated": rows_updated,
-                "start_datetime": start_dt.isoformat(),
-                "end_datetime": end_dt.isoformat(),
-            })
-
-        # --- Interpolate Mode ---
-        elif correction_type == 'interpolate':
-            # Fetch boundary values: value at start_dt and value at end_dt
-            start_val, end_val = _fetch_interpolation_boundaries(station, start_dt, end_dt)
-
-            # Calculate time and value deltas
-            total_seconds = (end_dt - start_dt).total_seconds()
-            value_delta = end_val - start_val
-
-            # PostgreSQL UPDATE with interpolation formula:
-            # The offset at each point is: interpolated_value - raw_value
-            # where interpolated_value = start_val + (elapsed_time / total_time) * value_delta
-            interpolate_sql = text("""
-                UPDATE "Monitors_info2" AS m
-                SET "Calibration_Offset" =
-                    ( :start_val + (EXTRACT(EPOCH FROM (m."Tab_DateTime" - :start_dt)) / :total_seconds) * :value_delta )
-                    - CAST(m."Tab_Value_mDepthC1" AS FLOAT)
-                FROM "Locations" AS l
-                WHERE m."Tab_TabularTag" = l."Tab_TabularTag"
-                  AND l."Station" = :station
-                  AND m."Tab_DateTime" >= :start_dt
-                  AND m."Tab_DateTime" <= :end_dt
-            """)
-
-            with engine.begin() as conn:
-                result = conn.execute(interpolate_sql, {
-                    "start_val": start_val,
-                    "end_dt": end_dt.isoformat(),
-                    "start_dt": start_dt.isoformat(),
-                    "total_seconds": total_seconds,
-                    "value_delta": value_delta,
-                    "station": station,
-                })
-                rows_updated = result.rowcount
-
-            logger.info(
-                f"[OK] Committed interpolation for {station} ({rows_updated} rows)"
-            )
-
-            # Invalidate Redis cache
-            _invalidate_redis_cache()
-
-            return _ok({
-                "success": True,
-                "station": station,
-                "correction_type": "interpolate",
-                "start_value": start_val,
-                "end_value": end_val,
-                "rows_updated": rows_updated,
-                "start_datetime": start_dt.isoformat(),
-                "end_datetime": end_dt.isoformat(),
-            })
-
-        # --- Relative Mode ---
-        elif correction_type == 'relative':
-            if not reference_station:
-                return _err(400, "relative mode requires reference_station")
-
-            try:
-                expected_gap = float(body.get("expected_gap", 0.0))
-            except (TypeError, ValueError):
-                return _err(400, "expected_gap must be a number")
-            if not np.isfinite(expected_gap):
-                return _err(400, "expected_gap must be finite")
-
-            relative_sql = text(f"""
-                UPDATE "Monitors_info2" AS target_m
-                SET "Calibration_Offset" = (
-                    (CAST(ref_m."Tab_Value_mDepthC1" AS FLOAT) + COALESCE(CAST(ref_m."Calibration_Offset" AS FLOAT), 0) + :expected_gap)
-                    - CAST(target_m."Tab_Value_mDepthC1" AS FLOAT)
-                )
-                FROM "Monitors_info2" AS ref_m
-                JOIN "Locations" AS target_l ON target_m."Tab_TabularTag" = target_l."Tab_TabularTag"
-                JOIN "Locations" AS ref_l ON ref_m."Tab_TabularTag" = ref_l."Tab_TabularTag"
-                WHERE target_l."Station" = :station
-                  AND ref_l."Station" = :reference_station
-                  AND target_m."Tab_DateTime" = ref_m."Tab_DateTime"
-                  AND target_m."Tab_DateTime" >= :start_dt
-                  AND target_m."Tab_DateTime" <= :end_dt
-            """)
-
-            with engine.begin() as conn:
-                result = conn.execute(relative_sql, {
-                    "station": station,
-                    "reference_station": reference_station,
-                    "start_dt": start_dt.isoformat(),
-                    "end_dt": end_dt.isoformat(),
-                    "expected_gap": expected_gap,
-                })
-                rows_updated = result.rowcount
-
-            logger.info(f"[OK] Committed relative calibration for {station} vs {reference_station}")
-            _invalidate_redis_cache()
-
-            return _ok({
-                "success": True,
-                "station": station,
-                "correction_type": "relative",
-                "reference_station": reference_station,
-                "expected_gap": expected_gap,
-                "rows_updated": rows_updated,
-                "start_datetime": start_dt.isoformat(),
-                "end_datetime": end_dt.isoformat(),
-            })
-
-    except ValueError as ve:
-        logger.error(f"[ERROR] commit_correction validation: {ve}")
-        return _err(422, str(ve))
-    except Exception as e:
-        logger.error(f"[ERROR] commit_correction: {e}", exc_info=True)
-        return _err(500, "Internal server error")
+        execute_values(cur, "INSERT INTO _cal_new (tag, dt, off) VALUES %s", values, page_size=5000)
+    finally:
+        cur.close()
+    return len(values)
 
 
 # ---------------------------------------------------------------------------
-# Handler: Suggest (12-hour stable window algorithm)
+# Handlers
 # ---------------------------------------------------------------------------
 
-def lambda_handler_suggest(event, context):
-    """
-    Detect calibration offset using 12-hour stable window algorithm.
+def _guarded(fn):
+    def wrapper(event, context):
+        ident, err = _require_admin(event)
+        if err:
+            return err
+        if not DATABASE_AVAILABLE:
+            return _err(503, "Database not available")
+        try:
+            return fn(event, ident)
+        except _BadRequest as br:
+            return _err(br.status, br.msg)
+        except Exception:
+            logger.exception("[ERROR] calibration handler %s failed", fn.__name__)
+            return _err(500, "Internal server error")
+    wrapper.__name__ = fn.__name__
+    return wrapper
 
-    Algorithm:
-      1. Fetch 12 hours BEFORE start_datetime (before_window)
-      2. Fetch 12 hours AFTER end_datetime (after_window)
-      3. Calculate median of each window, ignore data between (spike area)
-      4. Suggested offset = before_median - after_median
-      5. Confidence based on IQR consistency of each window
 
-    Request body: {
-        station: str,
-        start_datetime: str,
-        end_datetime: str
-    }
-    Headers: X-Calibration-Key: <key>
-    """
-    auth_err = _check_auth(event)
-    if auth_err:
-        return auth_err
-
-    if not DATABASE_AVAILABLE:
-        return _err(503, "Database not available")
-
+@_guarded
+def lambda_handler_preview(event, ident):
     body = _parse_body(event)
+    station = _station(body.get("station"))
+    start, end = _window(body)
+    ctype = _correction_type(body)
+    reference = _optional_reference(body, station)
+    with engine.connect() as conn:
+        df, params = _compute_targets(conn, body, station, start, end, ctype, reference)
+        refs = _reference_rows(conn, reference, start, end)
+    delta = df["corrected_value"] - df["current_value"]
+    return _ok({
+        "station": station,
+        "correction_type": ctype,
+        "parameters": params,
+        "offset_applied": params.get("offset"),
+        "start_datetime": start.isoformat(),
+        "end_datetime": end.isoformat(),
+        "rows_affected": int(len(df)),
+        "change_summary": {"min": float(delta.min()), "max": float(delta.max()), "mean": float(delta.mean())},
+        "data": [
+            {"Tab_DateTime": str(r.Tab_DateTime), "Station": station, "raw_value": r.raw_value,
+             "current_value": r.current_value, "corrected_value": r.corrected_value}
+            for r in df.itertuples(index=False)
+        ],
+        "reference_data": refs,
+    })
 
-    station, err = _validate_station(body.get("station"))
-    if err:
-        return err
 
-    start_dt, err = _validate_datetime(body.get("start_datetime"), "start_datetime")
-    if err:
-        return err
-    end_dt, err = _validate_datetime(body.get("end_datetime"), "end_datetime")
-    if err:
-        return err
+@_guarded
+def lambda_handler_commit(event, ident):
+    body = _parse_body(event)
+    request_id = _request_id(body)
+    station = _station(body.get("station"))
+    start, end = _window(body)
+    ctype = _correction_type(body)
+    reference = _optional_reference(body, station)
 
-    err = _validate_window(start_dt, end_dt)
-    if err:
-        return err
+    with engine.begin() as conn:
+        # Idempotency: the same request_id never applies twice (client retries, double clicks).
+        prev = conn.execute(text('SELECT "Id", "Rows_Affected", "Station" FROM "Calibration_Audit" WHERE "Request_Id" = :rid'),
+                            {"rid": request_id}).fetchone()
+        if prev:
+            return _ok({"success": True, "duplicate": True, "audit_id": prev[0], "rows_updated": prev[1], "station": prev[2]})
 
-    try:
-        reference_station_raw = body.get("reference_station")
-        reference_station = None
-        if reference_station_raw and reference_station_raw != "none":
-            if reference_station_raw not in ALLOWED_REFERENCE_STATIONS:
-                return _err(400, f"reference_station must be one of: {sorted(ALLOWED_REFERENCE_STATIONS)}")
-            reference_station = reference_station_raw
+        # Serialize commits per station so overlapping corrections can't interleave.
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"calibration:{station}"})
 
+        df, params = _compute_targets(conn, body, station, start, end, ctype, reference)
+        df["new_offset"] = df["corrected_value"] - df["raw_value"]
+
+        audit_id = conn.execute(text("""
+            INSERT INTO "Calibration_Audit" ("Request_Id", "Action", "Station", "Correction_Type",
+                "Start_DateTime", "End_DateTime", "Parameters", "Rows_Affected", "User_Email", "User_Sub")
+            VALUES (:rid, 'commit', :station, :ctype, :start, :end, CAST(:params AS JSONB), :n, :email, :sub)
+            RETURNING "Id"
+        """), {"rid": request_id, "station": station, "ctype": ctype, "start": start, "end": end,
+               "params": json.dumps(params), "n": int(len(df)), "email": ident.email, "sub": ident.sub}).scalar_one()
+
+        n_rows = _stage_new_offsets(conn, df)
+        # Snapshot previous offsets (NULL where there was none) for undo, then upsert — set-based.
+        conn.execute(text("""
+            INSERT INTO "Calibration_Audit_Rows" ("Audit_Id", "Tab_TabularTag", "Tab_DateTime", "Old_Offset")
+            SELECT :aid, n.tag, n.dt, o."Offset"
+              FROM _cal_new n
+              LEFT JOIN "Calibration_Offsets" o ON o."Tab_TabularTag" = n.tag AND o."Tab_DateTime" = n.dt
+        """), {"aid": audit_id})
+        conn.execute(text("""
+            INSERT INTO "Calibration_Offsets" ("Tab_TabularTag", "Tab_DateTime", "Offset", "Audit_Id")
+            SELECT n.tag, n.dt, n.off, :aid FROM _cal_new n
+            ON CONFLICT ("Tab_TabularTag", "Tab_DateTime")
+            DO UPDATE SET "Offset" = EXCLUDED."Offset", "Audit_Id" = EXCLUDED."Audit_Id"
+        """), {"aid": audit_id})
+        rows = range(n_rows)
+
+    logger.info("[AUDIT] commit id=%s station=%s type=%s rows=%s user=%s", audit_id, station, ctype, len(rows), ident.email)
+    _invalidate_cache()
+    return _ok({"success": True, "audit_id": audit_id, "station": station, "correction_type": ctype,
+                "parameters": params, "offset_applied": params.get("offset"), "rows_updated": len(rows),
+                "start_datetime": start.isoformat(), "end_datetime": end.isoformat()})
+
+
+@_guarded
+def lambda_handler_revert(event, ident):
+    """Undo the most recent un-reverted commit for a station (or a specific audit_id if it is the latest)."""
+    body = _parse_body(event)
+    request_id = _request_id(body)
+    station = _station(body.get("station"))
+    with engine.begin() as conn:
+        prev = conn.execute(text('SELECT "Reverts_Audit_Id", "Rows_Affected" FROM "Calibration_Audit" WHERE "Request_Id" = :rid'),
+                            {"rid": request_id}).fetchone()
+        if prev:
+            return _ok({"success": True, "duplicate": True, "reverted_audit_id": prev[0], "rows_restored": prev[1]})
+        conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"calibration:{station}"})
+        target = conn.execute(text("""
+            SELECT "Id" FROM "Calibration_Audit"
+             WHERE "Station" = :station AND "Action" = 'commit' AND "Reverted_By_Id" IS NULL
+             ORDER BY "Id" DESC LIMIT 1
+        """), {"station": station}).scalar()
+        if target is None:
+            raise _BadRequest(404, f"No commit to revert for {station}")
+        if body.get("audit_id") is not None and int(body["audit_id"]) != target:
+            raise _BadRequest(409, "Only the most recent commit for a station can be reverted")
+
+        n = conn.execute(text('SELECT COUNT(*) FROM "Calibration_Audit_Rows" WHERE "Audit_Id" = :a'), {"a": target}).scalar()
+        rev_id = conn.execute(text("""
+            INSERT INTO "Calibration_Audit" ("Request_Id", "Action", "Station", "Rows_Affected",
+                                             "User_Email", "User_Sub", "Reverts_Audit_Id")
+            VALUES (:rid, 'revert', :station, :n, :email, :sub, :target) RETURNING "Id"
+        """), {"rid": request_id, "station": station, "n": n, "email": ident.email, "sub": ident.sub,
+               "target": target}).scalar_one()
+        # Restore previous values: delete rows that had no correction, reset the rest.
+        conn.execute(text("""
+            DELETE FROM "Calibration_Offsets" o USING "Calibration_Audit_Rows" r
+             WHERE r."Audit_Id" = :a AND r."Old_Offset" IS NULL
+               AND o."Tab_TabularTag" = r."Tab_TabularTag" AND o."Tab_DateTime" = r."Tab_DateTime"
+        """), {"a": target})
+        conn.execute(text("""
+            UPDATE "Calibration_Offsets" o SET "Offset" = r."Old_Offset", "Audit_Id" = :rev
+              FROM "Calibration_Audit_Rows" r
+             WHERE r."Audit_Id" = :a AND r."Old_Offset" IS NOT NULL
+               AND o."Tab_TabularTag" = r."Tab_TabularTag" AND o."Tab_DateTime" = r."Tab_DateTime"
+        """), {"a": target, "rev": rev_id})
+        conn.execute(text('UPDATE "Calibration_Audit" SET "Reverted_By_Id" = :rev WHERE "Id" = :a'),
+                     {"rev": rev_id, "a": target})
+    logger.info("[AUDIT] revert id=%s of=%s station=%s user=%s", rev_id, target, station, ident.email)
+    _invalidate_cache()
+    return _ok({"success": True, "revert_audit_id": rev_id, "reverted_audit_id": target, "rows_restored": n})
+
+
+@_guarded
+def lambda_handler_history(event, ident):
+    body = _parse_body(event)
+    params = {"limit": 50}
+    where = ""
+    if body.get("station"):
+        params["station"] = _station(body["station"])
+        where = 'WHERE "Station" = :station'
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"""
+            SELECT "Id", "Action", "Station", "Correction_Type", "Start_DateTime", "End_DateTime",
+                   "Parameters", "Rows_Affected", "User_Email", "Created_At", "Reverts_Audit_Id", "Reverted_By_Id"
+              FROM "Calibration_Audit" {where} ORDER BY "Id" DESC LIMIT :limit
+        """), params).mappings().all()   # noqa: S608 — `where` is a constant string
+    return _ok({"history": [dict(r) for r in rows]})
+
+
+@_guarded
+def lambda_handler_suggest(event, ident):
+    body = _parse_body(event)
+    station = _station(body.get("station"))
+    start, end = _window(body)
+    reference = _optional_reference(body, station)
+
+    with engine.connect() as conn:
         # Relative mode with drift detection
-        if reference_station and body.get("expected_gap") is not None:
-            target_df = _fetch_raw(station, start_dt, end_dt)
-            ref_df = _fetch_raw(reference_station, start_dt, end_dt)
-
-            if target_df.empty or ref_df.empty:
-                return _err(404, f"Missing data for {station} or {reference_station} in window")
-
-            merged = target_df.merge(
-                ref_df[['Tab_DateTime', 'effective_value']].rename(columns={'effective_value': 'ref_val'}),
-                on='Tab_DateTime',
-                how='inner'
-            )
-
+        if reference and body.get("expected_gap") is not None:
+            gap = _number(body, "expected_gap")
+            tgt = _fetch_window(conn, station, start, end)
+            ref = _fetch_window(conn, reference, start, end)
+            if tgt.empty or ref.empty:
+                raise _BadRequest(404, f"Missing data for {station} or {reference} in window")
+            merged = tgt.merge(ref[["Tab_DateTime", "current_value"]].rename(columns={"current_value": "ref"}),
+                               on="Tab_DateTime", how="inner")
             if merged.empty:
-                return _err(404, "No overlapping timestamps between stations")
-
-            merged['delta'] = merged['effective_value'] - merged['ref_val']
-
-            try:
-                expected_delta = float(body.get("expected_gap", 0.0))
-            except (TypeError, ValueError):
-                return _err(400, "expected_gap must be a number")
-
-            merged['deviation'] = (merged['delta'] - expected_delta).abs()
-
-            DRIFT_THRESHOLD = 0.05
-            drifted = merged[merged['deviation'] > DRIFT_THRESHOLD]
-
+                raise _BadRequest(404, "No overlapping timestamps between stations")
+            merged["deviation"] = ((merged["current_value"] - merged["ref"]) - gap).abs()
+            drifted = merged[merged["deviation"] > DRIFT_THRESHOLD_M]
             if drifted.empty:
-                return _ok({
-                    "station": station,
-                    "status": "no_drift_detected",
-                    "reference_station": reference_station,
-                    "expected_gap": expected_delta,
-                    "message": "Delta between stations matches expected gap throughout window"
-                })
+                return _ok({"station": station, "status": "no_drift_detected", "reference_station": reference,
+                            "expected_gap": gap,
+                            "message": "Delta between stations matches the expected gap throughout the window"})
+            first, last = drifted["Tab_DateTime"].min(), drifted["Tab_DateTime"].max()
+            return _ok({"station": station, "drift_detected": True, "reference_station": reference,
+                        "expected_gap": gap, "malfunction_start": first.isoformat(), "malfunction_end": last.isoformat(),
+                        "drift_samples": int(len(drifted)), "max_deviation": float(drifted["deviation"].max()),
+                        "message": f"Drift detected: {first} to {last}"})
 
-            first_drift_ts = drifted['Tab_DateTime'].min()
-            last_drift_ts = drifted['Tab_DateTime'].max()
+        # Offset suggestion: bring the window back to the level of the surrounding stable data.
+        inside = _fetch_window(conn, station, start, end)
+        before = _fetch_window(conn, station, start - timedelta(hours=STABLE_WINDOW_HOURS), start - timedelta(microseconds=1))
+        after = _fetch_window(conn, station, end + timedelta(microseconds=1), end + timedelta(hours=STABLE_WINDOW_HOURS))
 
-            return _ok({
-                "station": station,
-                "drift_detected": True,
-                "reference_station": reference_station,
-                "expected_gap": expected_delta,
-                "malfunction_start": first_drift_ts.isoformat(),
-                "malfunction_end": last_drift_ts.isoformat(),
-                "drift_samples": len(drifted),
-                "max_deviation": float(drifted['deviation'].max()),
-                "message": f"Drift detected: {first_drift_ts} to {last_drift_ts}"
-            })
-        else:
-            # Fall back to existing 12-hour stable window algorithm (keep original code)
-            # Fetch stable windows: before (12h before start) and after (12h after end)
-            before_data, after_data = _fetch_stable_window_data(station, start_dt, end_dt)
+    if inside.empty:
+        raise _BadRequest(404, "No data inside the correction window")
+    if before.empty and after.empty:
+        raise _BadRequest(422, f"Need stable data within {STABLE_WINDOW_HOURS} h before or after the window")
 
-            if before_data.empty or after_data.empty:
-                return _err(
-                    422,
-                    "Insufficient data to detect shift: need stable data 12 hours before and after the correction window"
-                )
+    surround = pd.concat([before["current_value"], after["current_value"]])
+    inside_med = float(inside["current_value"].median())
+    surround_med = float(surround.median())
+    suggested = round(surround_med - inside_med, 4)
 
-            # Calculate medians and IQR for each window
-            before_median, before_iqr = _calculate_window_stats(before_data)
-            after_median, after_iqr = _calculate_window_stats(after_data)
+    def iqr(s):
+        return float(s.quantile(0.75) - s.quantile(0.25)) if len(s) else None
 
-            if before_median is None or after_median is None:
-                return _err(422, "Could not calculate statistics for stable windows")
+    b_med = float(before["current_value"].median()) if len(before) else None
+    a_med = float(after["current_value"].median()) if len(after) else None
+    # Confidence: stable surroundings that agree with each other on both sides.
+    spread = max(v for v in [iqr(before["current_value"]), iqr(after["current_value"]), 0.0] if v is not None)
+    disagreement = abs(b_med - a_med) if b_med is not None and a_med is not None else 0.1
+    score = max(spread, disagreement)
+    confidence = "high" if score < 0.05 else "medium" if score < 0.15 else "low"
 
-            # Suggested offset: the median difference (before - after)
-            # This represents the shift to correct for
-            suggested_offset = round(before_median - after_median, 4)
-
-            # Confidence based on IQR consistency
-            # Low IQR in both windows = high confidence (stable plateaus)
-            # High IQR in either window = low confidence (noisy data)
-            avg_iqr = (before_iqr + after_iqr) / 2.0
-            confidence_threshold = 0.05  # Threshold for IQR stability
-            confidence = "high" if avg_iqr < confidence_threshold else "medium" if avg_iqr < 0.15 else "low"
-
-            return _ok({
-                "station": station,
-                "suggested_offset": suggested_offset,
-                "confidence": confidence,
-                "method": "12_hour_stable_window",
-                "before_median": round(before_median, 4),
-                "after_median": round(after_median, 4),
-                "average_iqr": round(avg_iqr, 4),
-                "samples_before": len(before_data),
-                "samples_after": len(after_data),
-            })
-
-    except Exception as e:
-        logger.error(f"[ERROR] suggest_correction: {e}", exc_info=True)
-        return _err(500, "Internal server error")
+    return _ok({
+        "station": station, "suggested_offset": suggested, "confidence": confidence,
+        "method": "window_vs_surrounding_median",
+        "inside_median": round(inside_med, 4), "surrounding_median": round(surround_med, 4),
+        "before_median": None if b_med is None else round(b_med, 4),
+        "after_median": None if a_med is None else round(a_med, 4),
+        "step_change_before_after": None if (b_med is None or a_med is None) else round(a_med - b_med, 4),
+        "before_samples": int(len(before)), "after_samples": int(len(after)), "inside_samples": int(len(inside)),
+    })
 
 
-# ---------------------------------------------------------------------------
-# Default entry point (for AWS Lambda compatibility)
-# ---------------------------------------------------------------------------
+def _invalidate_cache():
+    """Best-effort Redis invalidation (Redis is optional; not deployed on AWS for now)."""
+    redis_url = os.getenv("REDIS_URL")
+    if not redis_url:
+        return
+    try:
+        import redis
+        r = redis.from_url(redis_url, socket_timeout=2)
+        for pattern in ("*data*", "*stations*", "query:*"):
+            batch = list(r.scan_iter(match=pattern, count=500))
+            if batch:
+                r.delete(*batch)
+        r.close()
+    except Exception as exc:
+        logger.warning("Redis cache invalidation skipped: %s", type(exc).__name__)
+
 
 def lambda_handler(event, context):
-    """Route to the correct sub-handler based on the path."""
-    path = event.get("path", "")
-    if "preview" in path:
-        return lambda_handler_preview(event, context)
-    if "commit" in path:
-        return lambda_handler_commit(event, context)
-    if "suggest" in path:
-        return lambda_handler_suggest(event, context)
+    """Route by path (API Gateway proxy integration)."""
+    path = (event.get("path") or event.get("rawPath") or "").rstrip("/")
+    for suffix, handler in (("/preview", lambda_handler_preview), ("/commit", lambda_handler_commit),
+                            ("/suggest", lambda_handler_suggest), ("/revert", lambda_handler_revert),
+                            ("/history", lambda_handler_history)):
+        if path.endswith(suffix):
+            return handler(event, context)
     return _err(404, "Unknown calibration endpoint")

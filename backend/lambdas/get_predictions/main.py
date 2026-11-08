@@ -74,7 +74,7 @@ def get_prediction_data(station: str, days_back: int = 30) -> pd.DataFrame:
         
         sql_query = '''
             SELECT m."Tab_DateTime", m."Tab_Value_mDepthC1"
-            FROM "Monitors_info2" m
+            FROM "Monitors_effective" m
             JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
             WHERE l."Station" = :station
             AND m."Tab_DateTime" >= :start_date

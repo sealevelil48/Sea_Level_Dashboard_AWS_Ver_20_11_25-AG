@@ -302,19 +302,14 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
             # Apply stored calibration offset at query time (non-destructive correction).
             # Falls back to raw value if the migration hasn't been run yet.
             # Uses lazy check to avoid race condition during module import.
-            depth_expr = (
-                '(CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
-                ' + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0))'
-                if _check_calibration_column_exists()
-                else 'CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
-            )
+            depth_expr = 'CAST(m."Tab_Value_mDepthC1" AS FLOAT)'  # view already applies corrections
             sql_query = f"""
                 SELECT
                     m."Tab_DateTime",
                     l."Station",
                     {depth_expr} as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
             """
@@ -327,7 +322,7 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                     AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                     AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
             '''
@@ -340,7 +335,7 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                     AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                     AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
             '''
@@ -355,7 +350,7 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                         MIN(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Min_mDepthC1",
                         MAX(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Max_mDepthC1",
                         COUNT(*) as "RecordCount"
-                    FROM "Monitors_info2" m
+                    FROM "Monitors_effective" m
                     JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                     WHERE 1=1
                 '''
@@ -370,7 +365,7 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                         MIN(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Min_mDepthC1",
                         MAX(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Max_mDepthC1",
                         COUNT(*) as "RecordCount"
-                    FROM "Monitors_info2" m
+                    FROM "Monitors_effective" m
                     JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                     WHERE 1=1
                 '''
@@ -384,7 +379,7 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                     MIN(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Min_mDepthC1",
                     MAX(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Max_mDepthC1",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
             '''
@@ -398,7 +393,7 @@ def load_data_from_db_optimized(start_date=None, end_date=None, station=None,
                     MIN(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Min_mDepthC1",
                     MAX(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Max_mDepthC1",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE 1=1
             '''
@@ -542,19 +537,14 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
         if agg_level == 'raw':
             # Apply stored calibration offset at query time (non-destructive correction).
             # Same logic as load_data_from_db_optimized to ensure data consistency.
-            depth_expr = (
-                '(CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
-                ' + COALESCE(CAST(m."Calibration_Offset" AS FLOAT), 0))'
-                if _check_calibration_column_exists()
-                else 'CAST(m."Tab_Value_mDepthC1" AS FLOAT)'
-            )
+            depth_expr = 'CAST(m."Tab_Value_mDepthC1" AS FLOAT)'  # view already applies corrections
             sql_query = f'''
                 SELECT
                     m."Tab_DateTime",
                     l."Station",
                     {depth_expr} as "Tab_Value_mDepthC1",
                     CAST(m."Tab_Value_monT2m" AS FLOAT) as "Tab_Value_monT2m"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = ANY(:stations)
             '''
@@ -567,7 +557,7 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                     AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                     AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = ANY(:stations)
             '''
@@ -580,7 +570,7 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                     AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                     AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = ANY(:stations)
             '''
@@ -594,7 +584,7 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                         AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                         AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                         COUNT(*) as "RecordCount"
-                    FROM "Monitors_info2" m
+                    FROM "Monitors_effective" m
                     JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                     WHERE l."Station" = ANY(:stations)
                 '''
@@ -607,7 +597,7 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                         AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                         AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                         COUNT(*) as "RecordCount"
-                    FROM "Monitors_info2" m
+                    FROM "Monitors_effective" m
                     JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                     WHERE l."Station" = ANY(:stations)
                 '''
@@ -619,7 +609,7 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                     AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                     AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = ANY(:stations)
             '''
@@ -631,7 +621,7 @@ def load_data_batch_optimized(stations_list, start_date=None, end_date=None,
                     AVG(CAST(m."Tab_Value_mDepthC1" AS FLOAT)) as "Tab_Value_mDepthC1",
                     AVG(CAST(m."Tab_Value_monT2m" AS FLOAT)) as "Tab_Value_monT2m",
                     COUNT(*) as "RecordCount"
-                FROM "Monitors_info2" m
+                FROM "Monitors_effective" m
                 JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                 WHERE l."Station" = ANY(:stations)
             '''
