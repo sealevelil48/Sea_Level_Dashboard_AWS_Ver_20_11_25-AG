@@ -536,9 +536,30 @@ export const useChartJsConfig = ({
           borderWidth: 2,
           borderDash: [8, 4],
           pointRadius: 0,
-          tension: 0.4,
+          // Straight segments between samples: a smoothed (Bézier) preview line overshoots and
+          // shows levels that were never measured — not acceptable for mm-level corrections.
+          tension: 0,
           fill: false,
         });
+      }
+
+      // Relative mode: samples with no reference within the alignment tolerance get an
+      // interpolated correction — mark them so the operator can see where that happened.
+      if (filters.calibrationCorrectionType === 'relative') {
+        const unmatched = previewRows
+          .filter(r => r.matched === false && r.corrected_value != null && !isNaN(r.corrected_value))
+          .map(r => ({ x: new Date(r.Tab_DateTime), y: r.corrected_value }));
+        if (unmatched.length > 0) {
+          datasets.push({
+            label: `No reference — correction interpolated (${unmatched.length})`,
+            data: unmatched,
+            showLine: false,
+            borderColor: '#ff5c5c',
+            backgroundColor: '#ff5c5c',
+            pointRadius: 2.5,
+            pointStyle: 'crossRot',
+          });
+        }
       }
 
       // Reference station overlay — amber dashed (only when a reference was requested)
@@ -557,7 +578,7 @@ export const useChartJsConfig = ({
             borderWidth: 1.5,
             borderDash: [3, 3],
             pointRadius: 0,
-            tension: 0.4,
+            tension: 0,
             fill: false,
           });
         }
