@@ -17,6 +17,8 @@ const defaultFilters = {
   calibrationReference: 'none',        // 'none' | 'Ashdod' | 'Ashkelon'
   calibrationCorrectionType: 'offset', // 'offset' | 'interpolate' | 'relative'
   calibrationExpectedGap: null,        // metres, float | null — only used in relative mode
+  calibrationStrength: 'follow',       // relative mode: 'follow' (Target = Ref + Gap) | 'level' (one constant shift)
+  calibrationDriftThreshold: 0.05,     // metres — drift detection threshold
   calibrationPreviewData: null,        // API response or null
 };
 
@@ -44,12 +46,15 @@ export const useFilters = () => {
       predictionModels: filters.predictionModels,
       forecastHours: filters.forecastHours,
       // Calibration — full ISO timestamps for sub-minute precision in SQL
+      calibrationMode: Boolean(filters.calibrationMode),
       calibrationStart: filters.calibrationStart || `${startDateStr}T00:00`,
       calibrationEnd: filters.calibrationEnd || `${endDateStr}T23:59`,
       calibrationOffset: filters.calibrationOffset,
       calibrationReference: filters.calibrationReference,
       calibrationCorrectionType: filters.calibrationCorrectionType,
       calibrationExpectedGap: filters.calibrationExpectedGap ?? 0.0,
+      calibrationStrength: filters.calibrationStrength || 'follow',
+      calibrationDriftThreshold: filters.calibrationDriftThreshold ?? 0.05,
     };
   }, [filters]);
 

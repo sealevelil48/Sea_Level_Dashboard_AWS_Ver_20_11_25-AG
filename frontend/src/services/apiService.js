@@ -377,6 +377,14 @@ class ApiService {
     return result;
   }
 
+  calibrationReferences(params) {
+    return this._post('/api/calibration/references', params);
+  }
+
+  suggestCalibrationGap(params) {
+    return this._post('/api/calibration/suggest-gap', params);
+  }
+
   calibrationHistory(station) {
     return this._post('/api/calibration/history', station ? { station } : {});
   }

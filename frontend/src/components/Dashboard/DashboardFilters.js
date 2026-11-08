@@ -2,6 +2,7 @@ import React from 'react';
 import { Card, Form, Button, Collapse, Row, Col } from 'react-bootstrap';
 import DateRangePicker from '../DateRangePicker';
 import OffsetInput from './OffsetInput';
+import DriftPanel from './DriftPanel';
 import CustomDropdown from '../CustomDropdown';
 
 const DashboardFilters = ({
@@ -172,27 +173,32 @@ const DashboardFilters = ({
                     size="sm"
                     className="w-100 mb-2"
                     style={{ fontSize: '0.75rem' }}
+                    disabled={!selectedPoints || selectedPoints.length !== 2}
+                    title={!selectedPoints || selectedPoints.length !== 2 ? 'Click two points on the graph first' : undefined}
                     onClick={() => {
-                      if (!selectedPoints || selectedPoints.length !== 2) {
-                        alert('Please click exactly 2 points on the graph first');
-                        return;
-                      }
-                      // Sort by time to ensure start < end
+                      // Sort by time to ensure start < end. Chart times are local wall-clock times:
+                      // format their local parts (toISOString() would shift them to UTC, 2–3 h early).
                       const sorted = [...selectedPoints].sort((a, b) => new Date(a.x) - new Date(b.x));
-                      const startISO = new Date(sorted[0].x).toISOString().slice(0, 16);
-                      const endISO = new Date(sorted[1].x).toISOString().slice(0, 16);
-                      onFilterChange('calibrationStart', startISO);
-                      onFilterChange('calibrationEnd', endISO);
+                      const pad = (n) => String(n).padStart(2, '0');
+                      const local = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                      onFilterChange('calibrationStart', local(new Date(sorted[0].x)));
+                      onFilterChange('calibrationEnd', local(new Date(sorted[1].x)));
                     }}
                   >
                     🎯 Use Graph Selection
                   </Button>
+                  {(!selectedPoints || selectedPoints.length !== 2) && (
+                    <small className="d-block mb-2" style={{ fontSize: '0.65rem', color: '#8FA3BD', marginTop: '-4px' }}>
+                      Click two points on the graph to set the window.
+                    </small>
+                  )}
 
                   <Form.Group className="mb-1">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                    <Form.Label htmlFor="calibration-start" className="small mb-0" style={{ fontSize: '0.7rem' }}>
                       Start (exact time)
                     </Form.Label>
                     <Form.Control
+                      id="calibration-start"
                       type="datetime-local"
                       size="sm"
                       value={filters.calibrationStart || ''}
@@ -202,10 +208,11 @@ const DashboardFilters = ({
                   </Form.Group>
 
                   <Form.Group className="mb-1">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                    <Form.Label htmlFor="calibration-end" className="small mb-0" style={{ fontSize: '0.7rem' }}>
                       End (exact time)
                     </Form.Label>
                     <Form.Control
+                      id="calibration-end"
                       type="datetime-local"
                       size="sm"
                       value={filters.calibrationEnd || ''}
@@ -215,10 +222,11 @@ const DashboardFilters = ({
                   </Form.Group>
 
                   <Form.Group className="mb-2">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                    <Form.Label htmlFor="calibration-type" className="small mb-0" style={{ fontSize: '0.7rem' }}>
                       Correction Type
                     </Form.Label>
                     <Form.Select
+                      id="calibration-type"
                       value={filters.calibrationCorrectionType || 'offset'}
                       onChange={(e) => onFilterChange('calibrationCorrectionType', e.target.value)}
                       size="sm"
@@ -236,24 +244,37 @@ const DashboardFilters = ({
                   </Form.Group>
 
                   {filters.calibrationCorrectionType === 'relative' && (
-                    <Form.Group className="mb-2">
-                      <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
-                        Expected Gap (metres)
-                      </Form.Label>
-                      <Form.Control
-                        type="number"
-                        size="sm"
-                        step="0.001"
-                        min="-10"
-                        max="10"
+                    <div className="mb-2">
+                      <OffsetInput
+                        id="calibration-gap"
+                        label="Expected gap: Target − Reference (metres)"
+                        sliderLabel="Expected gap slider"
+                        suggestionLabel="Typical gap"
                         value={filters.calibrationExpectedGap ?? 0}
-                        onChange={(e) => onFilterChange('calibrationExpectedGap', parseFloat(e.target.value) || 0)}
-                        style={{ fontSize: '0.75rem' }}
+                        onChange={(v) => onFilterChange('calibrationExpectedGap', v)}
+                        onValidity={calibrationHook.setGapValid}
+                        suggestion={calibrationHook.gapSuggestion
+                          ? { value: calibrationHook.gapSuggestion.value,
+                              confidence: `${calibrationHook.gapSuggestion.days} d before, ${calibrationHook.gapSuggestion.confidence}` }
+                          : null}
                       />
-                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
-                        ℹ️ Target will be adjusted so: Target ≈ Reference + Gap
-                      </small>
-                    </Form.Group>
+                      <Button variant="outline-info" size="sm" className="w-100 mb-2" style={{ fontSize: '0.72rem' }}
+                              onClick={() => calibrationHook.fetchGapSuggestion(7)}
+                              disabled={calibrationHook.isLoadingGap || !filters.calibrationReference || filters.calibrationReference === 'none'}>
+                        {calibrationHook.isLoadingGap ? 'Measuring…' : '📏 Measure typical gap (7 days before)'}
+                      </Button>
+                      <fieldset className="mb-1">
+                        <legend className="small mb-1" style={{ fontSize: '0.7rem', float: 'none' }}>Correction strength</legend>
+                        <Form.Check type="radio" id="strength-follow" name="calibration-strength" className="small"
+                                    label="Follow reference (Target = Ref + Gap)"
+                                    checked={(filters.calibrationStrength || 'follow') === 'follow'}
+                                    onChange={() => onFilterChange('calibrationStrength', 'follow')} />
+                        <Form.Check type="radio" id="strength-level" name="calibration-strength" className="small"
+                                    label="Level shift (one constant, keeps own signal)"
+                                    checked={filters.calibrationStrength === 'level'}
+                                    onChange={() => onFilterChange('calibrationStrength', 'level')} />
+                      </fieldset>
+                    </div>
                   )}
 
                   {filters.calibrationCorrectionType === 'offset' && (
@@ -265,26 +286,55 @@ const DashboardFilters = ({
                     />
                   )}
 
-                  {(() => {
-                    const stationOptions = [
-                      { value: 'none', label: 'None' },
-                      ...(stations || [])
-                        .filter(s => s !== calibrationHook?.targetStation && s !== 'All Stations')
-                        .map(s => ({ value: s, label: s }))
-                    ];
-                    return (
-                      <Form.Group className="mb-2">
-                        <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
-                          Compare with Station
-                        </Form.Label>
-                        <CustomDropdown
-                          value={filters.calibrationReference || 'none'}
-                          onChange={(value) => onFilterChange('calibrationReference', value)}
-                          options={stationOptions}
-                        />
-                      </Form.Group>
-                    );
-                  })()}
+                  <Form.Group className="mb-2">
+                    <Form.Label htmlFor="calibration-reference" className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      {filters.calibrationCorrectionType === 'relative' ? 'Reference station' : 'Compare with station'}
+                      {calibrationHook.isLoadingReferences && <span style={{ color: '#8FA3BD' }}> · checking coverage…</span>}
+                    </Form.Label>
+                    <Form.Select
+                      id="calibration-reference"
+                      size="sm"
+                      value={filters.calibrationReference || 'none'}
+                      onChange={(e) => onFilterChange('calibrationReference', e.target.value)}
+                      style={{ fontSize: '0.75rem' }}
+                    >
+                      <option value="none">None</option>
+                      {(calibrationHook.references
+                        ? calibrationHook.references.map((r) => ({
+                            value: r.station,
+                            label: r.coverage > 0 ? `${r.station} · ${Math.round(r.coverage * 100)}%` : `${r.station} · no data in window`,
+                            disabled: r.coverage === 0,
+                          }))
+                        : (stations || [])
+                            .filter((st) => st !== calibrationHook.targetStation && st !== 'All Stations')
+                            .map((st) => ({ value: st, label: st, disabled: false }))
+                      ).map((o) => (
+                        <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>
+                      ))}
+                    </Form.Select>
+                    {calibrationHook.references && (
+                      <small className="d-block mt-1" style={{ fontSize: '0.62rem', color: '#8FA3BD' }}>
+                        % = share of the window with a reference sample within ±2 min
+                      </small>
+                    )}
+                  </Form.Group>
+
+                  {filters.calibrationCorrectionType === 'relative' && (
+                    <Form.Group className="mb-2">
+                      <Form.Label htmlFor="drift-threshold" className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                        Drift threshold (metres)
+                      </Form.Label>
+                      <Form.Select id="drift-threshold" size="sm" style={{ fontSize: '0.75rem' }}
+                                   value={String(filters.calibrationDriftThreshold ?? 0.05)}
+                                   onChange={(e) => onFilterChange('calibrationDriftThreshold', Number(e.target.value))}>
+                        <option value="0.02">0.02 m (sensitive)</option>
+                        <option value="0.03">0.03 m</option>
+                        <option value="0.05">0.05 m (standard)</option>
+                        <option value="0.1">0.10 m</option>
+                        <option value="0.2">0.20 m (coarse)</option>
+                      </Form.Select>
+                    </Form.Group>
+                  )}
 
                   <Button
                     variant="outline-info"
@@ -294,7 +344,9 @@ const DashboardFilters = ({
                     onClick={calibrationHook.fetchSuggest}
                     disabled={calibrationHook.isLoadingSuggest}
                   >
-                    {calibrationHook.isLoadingSuggest ? 'Detecting…' : '⚡ Auto-Suggest Offset'}
+                    {calibrationHook.isLoadingSuggest
+                      ? 'Detecting…'
+                      : filters.calibrationCorrectionType === 'relative' ? '🔎 Detect Drift (snap window)' : '⚡ Auto-Suggest Offset'}
                   </Button>
 
                   <Button
@@ -309,10 +361,17 @@ const DashboardFilters = ({
                   </Button>
 
                   {calibrationHook.error && (
-                    <small className="text-danger d-block mt-1" style={{ fontSize: '0.7rem' }}>
+                    <small role="alert" className="text-danger d-block mt-1" style={{ fontSize: '0.7rem' }}>
                       {calibrationHook.error}
                     </small>
                   )}
+
+                  {/* Stays visible after "Correct this" switches to offset mode */}
+                  <DriftPanel
+                    drift={calibrationHook.drift}
+                    threshold={filters.calibrationDriftThreshold ?? 0.05}
+                    onApplyEpisode={calibrationHook.applyEpisode}
+                  />
                 </div>
               )}
 

@@ -46,7 +46,10 @@ const fmt = (n) => (Number.isFinite(n) ? `${n >= 0 ? '+' : '−'}${Math.abs(n).t
 const NUDGE_STYLE = { color: '#C8D6E8', borderColor: '#2a3f5f', background: 'transparent' };
 const clamp = (n) => Math.max(-MAX_OFFSET_M, Math.min(MAX_OFFSET_M, n));
 
-const OffsetInput = ({ value, onChange, onValidity, suggestion, disabled = false, id = 'calibration-offset' }) => {
+const OffsetInput = ({
+  value, onChange, onValidity, suggestion, disabled = false, id = 'calibration-offset',
+  label = 'Offset (metres)', sliderLabel = 'Offset slider', suggestionLabel = 'Suggested',
+}) => {
   const numeric = Number.isFinite(Number(value)) ? Number(value) : 0;
   const [text, setText] = useState(() => String(numeric));
   const editing = useRef(false);          // true while typing: don't overwrite the text from props
@@ -107,7 +110,7 @@ const OffsetInput = ({ value, onChange, onValidity, suggestion, disabled = false
   return (
     <Form.Group className="mb-2">
       <Form.Label htmlFor={id} className="small mb-1" style={{ fontSize: '0.7rem' }}>
-        Offset (metres)
+        {label}
       </Form.Label>
 
       <InputGroup size="sm" style={{ flexWrap: 'nowrap' }}>
@@ -151,7 +154,7 @@ const OffsetInput = ({ value, onChange, onValidity, suggestion, disabled = false
         <Button variant="outline-secondary" size="sm" className="py-0 px-1" onClick={() => nudge(-BIG_STEP)}
                 disabled={disabled} aria-label="Decrease by 1 cm" style={{ ...NUDGE_STYLE, fontSize: '0.65rem', minHeight: 24 }}>−1cm</Button>
         <Form.Range
-          aria-label="Offset slider"
+          aria-label={sliderLabel}
           min={-span}
           max={span}
           step={STEP}
@@ -171,7 +174,7 @@ const OffsetInput = ({ value, onChange, onValidity, suggestion, disabled = false
       {suggestion && Number.isFinite(suggestion.value) && (
         <div className="d-flex align-items-center justify-content-between gap-2 mt-1" style={{ fontSize: '0.72rem' }}>
           <span style={{ color: '#7FD3FF' }}>
-            Suggested {fmt(suggestion.value)} m{suggestion.confidence ? ` (${suggestion.confidence})` : ''}
+            {suggestionLabel} {fmt(suggestion.value)} m{suggestion.confidence ? ` (${suggestion.confidence})` : ''}
           </span>
           <Button size="sm" variant="outline-info" className="py-0 px-2" style={{ fontSize: '0.7rem' }}
                   onClick={() => { editing.current = false; commit(suggestion.value); }} disabled={disabled}>
