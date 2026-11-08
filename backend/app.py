@@ -399,3 +399,13 @@ async def calibration_revert(request: Request, user: Identity = Depends(admin_us
 @app.post("/api/calibration/history")
 async def calibration_history(request: Request, user: Identity = Depends(admin_user)):
     return await _calibration(request, user, calibration.lambda_handler_history if calibration else None)
+
+
+@app.post("/api/calibration/references")
+async def calibration_references(request: Request, user: Identity = Depends(admin_user)):
+    return await _calibration(request, user, calibration.lambda_handler_references if calibration else None)
+
+
+@app.post("/api/calibration/suggest-gap")
+async def calibration_suggest_gap(request: Request, user: Identity = Depends(admin_user)):
+    return await _calibration(request, user, calibration.lambda_handler_suggest_gap if calibration else None)

@@ -6,7 +6,8 @@ CREATE TABLE "Monitors_info2" ("Tab_TabularTag" INTEGER, "Tab_DateTime" TIMESTAM
                                "Tab_Value_mDepthC1" NUMERIC, "Tab_Value_monT2m" NUMERIC);
 CREATE TABLE "SeaTides" ("Date" DATE, "Station" TEXT, "HighTide" FLOAT, "LowTide" FLOAT);
 CREATE INDEX ON "Monitors_info2" ("Tab_TabularTag", "Tab_DateTime");
-INSERT INTO "Locations" VALUES (1, 'Haifa', 0, 0, 34.99, 32.82), (2, 'Ashdod', 0, 0, 34.63, 31.80);
+INSERT INTO "Locations" VALUES (1, 'Haifa', 0, 0, 34.99, 32.82), (2, 'Ashdod', 0, 0, 34.63, 31.80),
+                              (3, 'Acre', 0, 0, 35.07, 32.92);
 -- Haifa has a +0.20 m malfunction plateau on 2026-10-08 12:00–18:00; Ashdod is clean.
 INSERT INTO "Monitors_info2"
 SELECT t, g,
@@ -14,3 +15,10 @@ SELECT t, g,
          + 0.01 * sin(extract(epoch FROM g) / 3600),
        20
   FROM generate_series('2026-10-07'::timestamp, '2026-10-10', '1 minute') g, (VALUES (1), (2)) v(t);
+
+-- Acre: same tide, +0.034 m above Haifa's clean level, sampled 30 s out of step with the others,
+-- and offline 2026-10-08 14:00–15:00 (a realistic neighbour for alignment/coverage tests).
+INSERT INTO "Monitors_info2"
+SELECT 3, g + interval '30 seconds', 0.134 + 0.01 * sin(extract(epoch FROM g + interval '30 seconds') / 3600), 20
+  FROM generate_series('2026-10-07'::timestamp, '2026-10-10', '1 minute') g
+ WHERE NOT (g >= '2026-10-08 14:00' AND g < '2026-10-08 15:00');

@@ -126,3 +126,106 @@ def test_corrections_visible_in_aggregated_data(cal):
         assert df["Tab_Value_mDepthC1"].max() < 0.2   # the +0.20 plateau is gone at every level
     finally:
         call(cal.lambda_handler_revert, {"station": "Haifa", "request_id": rid()})
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 (Hydras): alignment, coverage, strengths, overwrite rule, references, gap, drift
+# ---------------------------------------------------------------------------
+REL = {**WINDOW, "correction_type": "relative"}
+
+
+def test_relative_follow_with_offset_sampling_and_outage_is_refused_below_95pct(cal):
+    """Acre samples 30 s out of step and is offline 14:00–15:00 → ~83 % coverage → follow commit refused."""
+    status, prev = call(cal.lambda_handler_preview, {**REL, "reference_station": "Acre", "expected_gap": -0.034})
+    assert status == 200
+    assert 0.80 < prev["coverage"] < 0.86 and prev["commit_allowed"] is False
+    assert any(not r["matched"] for r in prev["data"])
+    status, body = call(cal.lambda_handler_commit, {**REL, "reference_station": "Acre", "expected_gap": -0.034,
+                                                     "request_id": rid()})
+    assert status == 422 and "covers" in body["error"]
+
+
+def test_relative_follow_interpolates_offset_sampling(cal):
+    """Outside the outage, 30-s offset sampling still aligns (~100 %), and the plateau is removed."""
+    w = {**REL, "start_datetime": "2026-10-08T15:30", "end_datetime": "2026-10-08T18:00",
+         "reference_station": "Acre", "expected_gap": -0.034}
+    status, prev = call(cal.lambda_handler_preview, w)
+    assert status == 200 and prev["coverage"] >= 0.99 and prev["commit_allowed"]
+    before = value(cal, ts="2026-10-08 16:00")
+    status, body = call(cal.lambda_handler_commit, {**w, "request_id": rid()})
+    assert status == 200, body
+    assert value(cal, ts="2026-10-08 16:00") == pytest.approx(before - 0.20, abs=0.002)
+    call(cal.lambda_handler_revert, {"station": "Haifa", "request_id": rid()})
+
+
+def test_relative_level_shift_allows_partial_coverage_and_keeps_shape(cal):
+    w = {**REL, "reference_station": "Acre", "expected_gap": -0.034, "strength": "level"}
+    status, prev = call(cal.lambda_handler_preview, w)
+    assert status == 200 and prev["commit_allowed"] is True
+    assert prev["parameters"]["level_shift"] == pytest.approx(-0.20, abs=0.002)
+    shifts = {round(r["corrected_value"] - r["current_value"], 6) for r in prev["data"]}
+    assert len(shifts) == 1                       # one constant: the target keeps its own signal
+
+
+def test_relative_commit_overwrites_never_accumulates(cal):
+    """SQL overwrite rule: committing the same relative correction twice must not double-count the gap."""
+    w = {**REL, "reference_station": "Ashdod", "expected_gap": 0.0}
+    assert call(cal.lambda_handler_commit, {**w, "request_id": rid()})[0] == 200
+    once = value(cal)
+    assert call(cal.lambda_handler_commit, {**w, "request_id": rid()})[0] == 200   # different request id
+    assert value(cal) == pytest.approx(once, abs=1e-9)
+    assert value(cal) == pytest.approx(value(cal, "Ashdod"), abs=1e-9)
+    from sqlalchemy import text
+    with cal.engine.connect() as c:
+        off = c.execute(text('SELECT "Offset" FROM "Calibration_Offsets" WHERE "Tab_TabularTag" = 1 '
+                             'AND "Tab_DateTime" = :t'), {"t": PROBE}).scalar()
+    assert off == pytest.approx(value(cal) - 0.30 - 0.01 * __import__("math").sin(
+        __import__("pandas").Timestamp(PROBE).timestamp() / 3600), abs=1e-6)     # = ref − raw, not 2 × (ref − raw)
+    call(cal.lambda_handler_revert, {"station": "Haifa", "request_id": rid()})
+    call(cal.lambda_handler_revert, {"station": "Haifa", "request_id": rid()})
+
+
+def test_relative_rejects_bad_strength_and_tolerance(cal):
+    assert call(cal.lambda_handler_preview, {**REL, "reference_station": "Ashdod", "strength": "max"})[0] == 400
+    assert call(cal.lambda_handler_preview, {**REL, "reference_station": "Ashdod", "tolerance_seconds": 9999})[0] == 400
+    assert call(cal.lambda_handler_preview, {**REL, "reference_station": "Haifa"})[0] == 400   # self-reference
+
+
+def test_references_report_coverage(cal):
+    status, body = call(cal.lambda_handler_references, WINDOW)
+    assert status == 200
+    refs = {r["station"]: r for r in body["references"]}
+    assert "Haifa" not in refs
+    assert refs["Ashdod"]["coverage"] == 1.0
+    assert 0.80 < refs["Acre"]["coverage"] < 0.86
+    assert refs["Eilat"]["coverage"] == 0.0 and refs["Eilat"]["samples_in_window"] == 0
+    assert body["references"][0]["station"] == "Ashdod"          # sorted by coverage
+    assert call(cal.lambda_handler_references, WINDOW, claims=CLIENT)[0] == 403
+
+
+def test_suggest_gap_from_baseline(cal):
+    status, body = call(cal.lambda_handler_suggest_gap, {"station": "Haifa", "reference_station": "Acre",
+                                                         "start_datetime": "2026-10-08T12:00", "baseline_days": 1})
+    assert status == 200, body
+    assert body["gap"] == pytest.approx(-0.034, abs=0.001) and body["confidence"] == "high"
+
+
+def test_drift_engine_snaps_to_exact_window(cal):
+    w = {"station": "Haifa", "start_datetime": "2026-10-07T00:00", "end_datetime": "2026-10-09T23:59",
+         "reference_station": "Ashdod", "expected_gap": 0.0}
+    status, body = call(cal.lambda_handler_suggest, w)
+    assert status == 200 and body["drift_detected"] is True
+    assert len(body["episodes"]) == 1
+    assert body["malfunction_start"] == "2026-10-08T12:00:00"
+    assert body["malfunction_end"] == "2026-10-08T18:00:00"
+    ep = body["episodes"][0]
+    assert ep["type"] == "plateau" and ep["suggested_offset"] == pytest.approx(-0.20, abs=0.002)
+    assert body["deviation"] and len(body["deviation"]) <= 301
+
+
+def test_drift_engine_threshold_and_no_drift(cal):
+    w = {"station": "Haifa", "start_datetime": "2026-10-07T00:00", "end_datetime": "2026-10-08T06:00",
+         "reference_station": "Ashdod", "expected_gap": 0.0}
+    status, body = call(cal.lambda_handler_suggest, w)
+    assert status == 200 and body["drift_detected"] is False
+    assert call(cal.lambda_handler_suggest, {**w, "threshold": 0})[0] == 400

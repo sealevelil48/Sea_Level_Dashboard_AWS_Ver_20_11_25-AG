@@ -36,6 +36,10 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 from shared.auth import identity_from_event  # noqa: E402
+from shared.calibration_math import (  # noqa: E402
+    DEFAULT_TOLERANCE_S, MAX_TOLERANCE_S, MIN_COVERAGE_FOLLOW, MIN_COVERAGE_LEVEL,
+    DriftParams, align_reference, coverage, detect_drift, suggest_gap,
+)
 
 try:
     from shared.database import engine
@@ -171,6 +175,29 @@ def _request_id(body):
     except ValueError:
         raise _BadRequest(400, "request_id must be a UUID")
 
+def _tolerance(body):
+    raw = body.get("tolerance_seconds", DEFAULT_TOLERANCE_S)
+    try:
+        tol = int(raw)
+    except (TypeError, ValueError):
+        raise _BadRequest(400, "tolerance_seconds must be an integer")
+    if not 0 <= tol <= MAX_TOLERANCE_S:
+        raise _BadRequest(400, f"tolerance_seconds must be between 0 and {MAX_TOLERANCE_S}")
+    return tol
+
+
+def _drift_params(body):
+    try:
+        return DriftParams(
+            threshold_m=float(body.get("threshold", 0.05)),
+            smooth_minutes=int(body.get("smooth_minutes", 30)),
+            merge_minutes=int(body.get("merge_minutes", 30)),
+            min_minutes=int(body.get("min_minutes", 20)),
+        ).validate()
+    except (TypeError, ValueError) as exc:
+        raise _BadRequest(400, str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Queries (all read from the corrected view)
 # ---------------------------------------------------------------------------
@@ -224,7 +251,7 @@ def _boundaries(conn, station, start, end):
     return found["start"], found["end"]
 
 
-def _compute_targets(conn, body, station, start, end, ctype, reference):
+def _compute_targets(conn, body, station, start, end, ctype, reference, for_commit=False):
     """
     Return (df, params) where df has Tab_TabularTag, Tab_DateTime, raw_value, current_value,
     corrected_value. Shared by preview and commit so both always agree.
@@ -245,19 +272,45 @@ def _compute_targets(conn, body, station, start, end, ctype, reference):
         params = {"start_value": start_val, "end_value": end_val,
                   "anchor_start": t0.isoformat(), "anchor_end": t1.isoformat()}
 
-    else:  # relative
+    else:  # relative — Target ≈ Reference + Gap
         if not reference:
             raise _BadRequest(400, "relative mode requires reference_station")
         gap = _number(body, "expected_gap", default=0.0)
+        tolerance = _tolerance(body)
+        strength = body.get("strength") or "follow"
+        if strength not in ("follow", "level"):
+            raise _BadRequest(400, "strength must be 'follow' or 'level'")
         ref = _fetch_window(conn, reference, start, end)
         if ref.empty:
             raise _BadRequest(404, f"No reference data for {reference} in window")
-        ref_vals = ref.set_index("Tab_DateTime")["current_value"]
-        df["corrected_value"] = df["Tab_DateTime"].map(ref_vals) + gap
-        df = df[df["corrected_value"].notna()].copy()       # only timestamps both stations share
-        if df.empty:
-            raise _BadRequest(404, "No overlapping timestamps between stations")
-        params = {"reference_station": reference, "expected_gap": gap}
+        # Align the reference onto the target's own timestamps (stations rarely sample in lock-step).
+        ref_aligned = align_reference(df["Tab_DateTime"], ref["Tab_DateTime"], ref["current_value"], tolerance)
+        df["ref_aligned"] = ref_aligned.to_numpy()
+        df["matched"] = df["ref_aligned"].notna()
+        cov = coverage(ref_aligned)
+        needed = MIN_COVERAGE_FOLLOW if strength == "follow" else MIN_COVERAGE_LEVEL
+        if not df["matched"].any():
+            raise _BadRequest(404, "No reference samples within the alignment tolerance")
+        # Required correction on matched samples, relative to the CURRENT (already corrected) value
+        needed_shift = (df["ref_aligned"] + gap) - df["current_value"]
+        if strength == "follow":
+            # Matched samples follow the reference exactly; unmatched samples get the correction
+            # interpolated in time from their neighbours, so the window has no uncorrected holes.
+            shift = needed_shift.copy()
+            shift.index = pd.DatetimeIndex(df["Tab_DateTime"])
+            shift = shift.interpolate(method="time", limit_direction="both")
+            df["corrected_value"] = df["current_value"].to_numpy() + shift.to_numpy()
+        else:
+            # Level shift: one robust constant keeps the target's own short-term signal (seiches, waves).
+            const = float(needed_shift[df["matched"]].median())
+            df["corrected_value"] = df["current_value"] + const
+        params = {"reference_station": reference, "expected_gap": gap, "strength": strength,
+                  "tolerance_seconds": tolerance, "coverage": round(cov, 4), "min_coverage": needed}
+        if strength == "level":
+            params["level_shift"] = round(const, 4)
+        if for_commit and cov < needed:
+            raise _BadRequest(422, f"Reference covers {cov:.0%} of the window; {needed:.0%} is required "
+                                   f"for '{strength}'. Shorten the window, widen the tolerance or pick another reference.")
 
     return df, params
 
@@ -330,9 +383,12 @@ def lambda_handler_preview(event, ident):
         "end_datetime": end.isoformat(),
         "rows_affected": int(len(df)),
         "change_summary": {"min": float(delta.min()), "max": float(delta.max()), "mean": float(delta.mean())},
+        "coverage": params.get("coverage"),
+        "commit_allowed": params.get("coverage") is None or params["coverage"] >= params.get("min_coverage", 0),
         "data": [
             {"Tab_DateTime": str(r.Tab_DateTime), "Station": station, "raw_value": r.raw_value,
-             "current_value": r.current_value, "corrected_value": r.corrected_value}
+             "current_value": r.current_value, "corrected_value": r.corrected_value,
+             "matched": bool(getattr(r, "matched", True))}
             for r in df.itertuples(index=False)
         ],
         "reference_data": refs,
@@ -358,7 +414,7 @@ def lambda_handler_commit(event, ident):
         # Serialize commits per station so overlapping corrections can't interleave.
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"calibration:{station}"})
 
-        df, params = _compute_targets(conn, body, station, start, end, ctype, reference)
+        df, params = _compute_targets(conn, body, station, start, end, ctype, reference, for_commit=True)
         df["new_offset"] = df["corrected_value"] - df["raw_value"]
 
         audit_id = conn.execute(text("""
@@ -465,28 +521,35 @@ def lambda_handler_suggest(event, ident):
     reference = _optional_reference(body, station)
 
     with engine.connect() as conn:
-        # Relative mode with drift detection
+        # Relative mode: Drift Detection Engine
         if reference and body.get("expected_gap") is not None:
             gap = _number(body, "expected_gap")
+            params = _drift_params(body)
+            tolerance = _tolerance(body)
             tgt = _fetch_window(conn, station, start, end)
             ref = _fetch_window(conn, reference, start, end)
             if tgt.empty or ref.empty:
                 raise _BadRequest(404, f"Missing data for {station} or {reference} in window")
-            merged = tgt.merge(ref[["Tab_DateTime", "current_value"]].rename(columns={"current_value": "ref"}),
-                               on="Tab_DateTime", how="inner")
-            if merged.empty:
-                raise _BadRequest(404, "No overlapping timestamps between stations")
-            merged["deviation"] = ((merged["current_value"] - merged["ref"]) - gap).abs()
-            drifted = merged[merged["deviation"] > DRIFT_THRESHOLD_M]
-            if drifted.empty:
-                return _ok({"station": station, "status": "no_drift_detected", "reference_station": reference,
-                            "expected_gap": gap,
-                            "message": "Delta between stations matches the expected gap throughout the window"})
-            first, last = drifted["Tab_DateTime"].min(), drifted["Tab_DateTime"].max()
-            return _ok({"station": station, "drift_detected": True, "reference_station": reference,
-                        "expected_gap": gap, "malfunction_start": first.isoformat(), "malfunction_end": last.isoformat(),
-                        "drift_samples": int(len(drifted)), "max_deviation": float(drifted["deviation"].max()),
-                        "message": f"Drift detected: {first} to {last}"})
+            aligned = align_reference(tgt["Tab_DateTime"], ref["Tab_DateTime"], ref["current_value"], tolerance)
+            cov = coverage(aligned)
+            if cov < MIN_COVERAGE_LEVEL:
+                raise _BadRequest(422, f"Reference covers only {cov:.0%} of the window — drift detection needs 50%")
+            deviation = (tgt["current_value"].to_numpy() - aligned.to_numpy()) - gap
+            result = detect_drift(tgt["Tab_DateTime"], deviation, params)
+            episodes = result["episodes"]
+            out = {"station": station, "reference_station": reference, "expected_gap": gap,
+                   "coverage": round(cov, 4), "episodes": episodes, "slow_drift": result["slow_drift"],
+                   "deviation": result["series"], "params": result["params"]}
+            if not episodes:
+                out.update(status="no_drift_detected", drift_detected=False,
+                           message=f"Delta stays within ±{params.threshold_m:.3f} m of the expected gap")
+                return _ok(out)
+            first = episodes[0]
+            out.update(drift_detected=True, malfunction_start=first["start"], malfunction_end=first["end"],
+                       drift_samples=sum(e["samples"] for e in episodes),
+                       max_deviation=max(e["max_deviation"] for e in episodes),
+                       message=f"{len(episodes)} drift episode(s); first {first['start']} → {first['end']}")
+            return _ok(out)
 
         # Offset suggestion: bring the window back to the level of the surrounding stable data.
         inside = _fetch_window(conn, station, start, end)
@@ -525,6 +588,63 @@ def lambda_handler_suggest(event, ident):
     })
 
 
+@_guarded
+def lambda_handler_references(event, ident):
+    """Every other station with its coverage of the target's window (for the Compare dropdown)."""
+    body = _parse_body(event)
+    station = _station(body.get("station"))
+    start, end = _window(body)
+    tolerance = _tolerance(body)
+    out = []
+    with engine.connect() as conn:
+        tgt = _fetch_window(conn, station, start, end)
+        last = {r[0]: r[1] for r in conn.execute(text("""
+            SELECT l."Station", max(m."Tab_DateTime") FROM "Monitors_info2" m
+            JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag" GROUP BY l."Station"
+        """))}
+        for ref_station in sorted(_ALLOWED_STATIONS - {station}):
+            ref = _fetch_window(conn, ref_station, start, end)
+            if tgt.empty or ref.empty:
+                cov = 0.0
+            else:
+                cov = coverage(align_reference(tgt["Tab_DateTime"], ref["Tab_DateTime"], ref["current_value"], tolerance))
+            out.append({"station": ref_station, "samples_in_window": int(len(ref)), "coverage": round(cov, 4),
+                        "last_reading": str(last[ref_station]) if last.get(ref_station) else None})
+    out.sort(key=lambda r: (-r["coverage"], r["station"]))
+    return _ok({"station": station, "target_samples": int(len(tgt)), "references": out})
+
+
+@_guarded
+def lambda_handler_suggest_gap(event, ident):
+    """Typical gap target − reference over a calm baseline BEFORE the window (default 7 days)."""
+    body = _parse_body(event)
+    station = _station(body.get("station"))
+    reference = _optional_reference(body, station)
+    if not reference:
+        raise _BadRequest(400, "reference_station is required")
+    start = _dt(body.get("start_datetime"), "start_datetime")
+    try:
+        days = int(body.get("baseline_days", 7))
+    except (TypeError, ValueError):
+        raise _BadRequest(400, "baseline_days must be an integer")
+    if not 1 <= days <= 90:
+        raise _BadRequest(400, "baseline_days must be between 1 and 90")
+    tolerance = _tolerance(body)
+    b_start, b_end = start - timedelta(days=days), start - timedelta(microseconds=1)
+    with engine.connect() as conn:
+        tgt = _fetch_window(conn, station, b_start, b_end)
+        ref = _fetch_window(conn, reference, b_start, b_end)
+    if tgt.empty or ref.empty:
+        raise _BadRequest(404, f"No baseline data for {station} or {reference} in the {days} days before the window")
+    aligned = align_reference(tgt["Tab_DateTime"], ref["Tab_DateTime"], ref["current_value"], tolerance)
+    result = suggest_gap(pd.Series(tgt["current_value"].to_numpy() - aligned.to_numpy()))
+    if result is None:
+        raise _BadRequest(422, "Not enough overlapping baseline data to estimate the gap")
+    result.update(station=station, reference_station=reference, baseline_days=days,
+                  baseline_start=b_start.isoformat(), baseline_end=start.isoformat())
+    return _ok(result)
+
+
 def _invalidate_cache():
     """Best-effort Redis invalidation (Redis is optional; not deployed on AWS for now)."""
     redis_url = os.getenv("REDIS_URL")
@@ -546,7 +666,8 @@ def lambda_handler(event, context):
     """Route by path (API Gateway proxy integration)."""
     path = (event.get("path") or event.get("rawPath") or "").rstrip("/")
     for suffix, handler in (("/preview", lambda_handler_preview), ("/commit", lambda_handler_commit),
-                            ("/suggest", lambda_handler_suggest), ("/revert", lambda_handler_revert),
+                            ("/suggest-gap", lambda_handler_suggest_gap), ("/suggest", lambda_handler_suggest),
+                            ("/references", lambda_handler_references), ("/revert", lambda_handler_revert),
                             ("/history", lambda_handler_history)):
         if path.endswith(suffix):
             return handler(event, context)
