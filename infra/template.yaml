@@ -1,0 +1,740 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Sea Level Dashboard — Israel Mapping Center (MAPI). Implements the AWS architecture of 12.08.2025:
+  CloudFront → S3 (React) + API Gateway (REST, Cognito/Google, WAF) → Lambda → Aurora PostgreSQL
+  (cloud replica, synced from on-prem every minute). ElastiCache intentionally omitted (low user count).
+
+Parameters:
+  Env:
+    Type: String
+    AllowedValues: [dev, prod]
+    Default: dev
+  ImageUri:
+    Type: String
+    Description: ECR image URI for the backend (built from backend/Dockerfile.lambda)
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnets with a NAT route (Lambdas fetch IMS forecasts) and a route to on-prem (sync)
+  OnPremCidr:
+    Type: String
+    Description: CIDR of the on-prem PostgreSQL server, reachable over VPN/Direct Connect
+    Default: 10.0.0.0/8
+  OnPremSecretArn:
+    Type: String
+    Description: Secrets Manager ARN with {host,port,dbname,username,password} for a READ-ONLY on-prem user (create manually)
+  GoogleClientId:
+    Type: String
+  GoogleClientSecretName:
+    Type: String
+    Description: Name of a Secrets Manager secret whose SecretString is the Google OAuth client secret
+  CognitoDomainPrefix:
+    Type: String
+    Description: Hosted UI prefix, e.g. mapi-sealevel-prod → https://mapi-sealevel-prod.auth.il-central-1.amazoncognito.com
+  AdminEmails:
+    Type: String
+    Default: benp@mapi.gov.il
+  AllowedUsers:
+    Type: String
+    Default: mapi.gov.il
+    Description: Initial sign-in allowlist (domains and/or addresses, comma-separated). Edit later in SSM.
+  ExtraCallbackUrls:
+    Type: CommaDelimitedList
+    Default: http://localhost:30887/auth/callback
+    Description: Additional OAuth callback URLs (local development)
+  ExtraLogoutUrls:
+    Type: CommaDelimitedList
+    Default: http://localhost:30887/
+  OriginVerifyToken:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Random secret CloudFront sends to API Gateway; WAF blocks requests without it (scripts/deploy.sh generates it)
+  CloudFrontWebAclArn:
+    Type: String
+    Default: ''
+    Description: ARN of the CloudFront WAF (scope CLOUDFRONT, must live in us-east-1 - deploy infra/cloudfront-waf.yaml there)
+  AlarmEmail:
+    Type: String
+    Default: benp@mapi.gov.il
+  AuroraEngineVersion:
+    Type: String
+    Default: '16.4'
+  AuroraMinACU:
+    Type: Number
+    Default: 0.5
+  AuroraMaxACU:
+    Type: Number
+    Default: 4
+  DBName:
+    Type: String
+    Default: sealevel
+
+Conditions:
+  IsProd: !Equals [!Ref Env, prod]
+  HasCloudFrontWaf: !Not [!Equals [!Ref CloudFrontWebAclArn, '']]
+
+Globals:
+  Function:
+    Architectures: [x86_64]
+    Tracing: Active
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+        DB_NAME: !Ref DBName
+        REDIS_ENABLED: 'false'
+        DB_POOL_SIZE: '1'
+        DB_MAX_OVERFLOW: '0'
+        AUTH_MODE: cognito          # API Gateway's Cognito authorizer validates tokens before the Lambda runs
+        ADMIN_EMAILS: !Ref AdminEmails
+        CALIBRATION_STATIONS: Acre,Ashdod,Ashkelon,Eilat,Haifa,Yafo
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Network
+  # ---------------------------------------------------------------------------
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Sea Level Lambdas
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: AWS APIs and IMS }
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, CidrIp: !Ref OnPremCidr, Description: On-prem PostgreSQL }
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Sea Level Aurora - only from Lambdas
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, SourceSecurityGroupId: !Ref LambdaSecurityGroup }
+
+  LambdaToAuroraEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref AuroraSecurityGroup
+
+  # ---------------------------------------------------------------------------
+  # Aurora PostgreSQL (Serverless v2) — cloud replica + calibration layer
+  # ---------------------------------------------------------------------------
+  AuroraSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Sea Level Aurora
+      SubnetIds: !Ref PrivateSubnetIds
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      Engine: aurora-postgresql
+      EngineVersion: !Ref AuroraEngineVersion
+      DatabaseName: !Ref DBName
+      MasterUsername: sealevel_admin
+      ManageMasterUserPassword: true
+      StorageEncrypted: true
+      DeletionProtection: !If [IsProd, true, false]
+      BackupRetentionPeriod: !If [IsProd, 14, 3]
+      CopyTagsToSnapshot: true
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      VpcSecurityGroupIds: [!Ref AuroraSecurityGroup]
+      EnableCloudwatchLogsExports: [postgresql]
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: !Ref AuroraMinACU
+        MaxCapacity: !Ref AuroraMaxACU
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+      EnablePerformanceInsights: true
+
+  # Least-privilege application users (created in the DB by the migrate function)
+  ReaderSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Sea Level API — read-only DB user
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"sl_api_reader","host":"${AuroraCluster.Endpoint.Address}","port":5432,"dbname":"${DBName}"}'
+        GenerateStringKey: password
+        PasswordLength: 40
+        ExcludePunctuation: true
+  CalibratorSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Sea Level calibration — writes calibration tables only
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"sl_calibrator","host":"${AuroraCluster.Endpoint.Address}","port":5432,"dbname":"${DBName}"}'
+        GenerateStringKey: password
+        PasswordLength: 40
+        ExcludePunctuation: true
+  SyncSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Sea Level sync — writes replica tables only
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"sl_sync","host":"${AuroraCluster.Endpoint.Address}","port":5432,"dbname":"${DBName}"}'
+        GenerateStringKey: password
+        PasswordLength: 40
+        ExcludePunctuation: true
+
+  # ---------------------------------------------------------------------------
+  # Cognito — Google sign-in, allowlist, admin
+  # ---------------------------------------------------------------------------
+  AllowlistParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /sealevel/${Env}/allowed-users
+      Type: StringList
+      Value: !Ref AllowedUsers
+      Description: Who may sign in — domains (mapi.gov.il) or addresses (a@b.com), comma-separated
+
+  AccessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambdas.cognito_access.main.handler] }
+      MemorySize: 256
+      Timeout: 5
+      Environment:
+        Variables:
+          ALLOWLIST_PARAM: !Sub /sealevel/${Env}/allowed-users
+      Policies:
+        - SSMParameterReadPolicy: { ParameterName: !Sub 'sealevel/${Env}/allowed-users' }
+
+  AccessFunctionPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt AccessFunction.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub sealevel-${Env}
+      UsernameAttributes: [email]
+      AdminCreateUserConfig: { AllowAdminCreateUserOnly: true }   # no password sign-up; Google only
+      AccountRecoverySetting: { RecoveryMechanisms: [{ Name: admin_only, Priority: 1 }] }
+      DeletionProtection: !If [IsProd, ACTIVE, INACTIVE]
+      LambdaConfig:
+        PreSignUp: !GetAtt AccessFunction.Arn
+        PreTokenGeneration: !GetAtt AccessFunction.Arn
+      Schema:
+        - { Name: email, AttributeDataType: String, Mutable: true, Required: true }
+        - { Name: name, AttributeDataType: String, Mutable: true }
+        - { Name: picture, AttributeDataType: String, Mutable: true }
+
+  GoogleIdentityProvider:
+    Type: AWS::Cognito::UserPoolIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ProviderName: Google
+      ProviderType: Google
+      ProviderDetails:
+        client_id: !Ref GoogleClientId
+        client_secret: !Sub '{{resolve:secretsmanager:${GoogleClientSecretName}}}'
+        authorize_scopes: openid email profile
+      AttributeMapping:
+        email: email
+        email_verified: email_verified
+        name: name
+        picture: picture
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UserPool
+      Domain: !Ref CognitoDomainPrefix
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: GoogleIdentityProvider
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub sealevel-web-${Env}
+      GenerateSecret: false                       # SPA: public client + PKCE
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [Google]
+      CallbackURLs: !Split [',', !Join [',', [!Sub 'https://${Distribution.DomainName}/auth/callback', !Join [',', !Ref ExtraCallbackUrls]]]]
+      LogoutURLs: !Split [',', !Join [',', [!Sub 'https://${Distribution.DomainName}/', !Join [',', !Ref ExtraLogoutUrls]]]]
+      IdTokenValidity: 60
+      AccessTokenValidity: 60
+      RefreshTokenValidity: 12
+      TokenValidityUnits: { IdToken: minutes, AccessToken: minutes, RefreshToken: hours }
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: admin
+      Description: Calibration and maintenance (also granted by ADMIN_EMAILS)
+
+  # ---------------------------------------------------------------------------
+  # API Gateway (REST) + WAF
+  # ---------------------------------------------------------------------------
+  ApiAccessLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /sealevel/${Env}/api-access
+      RetentionInDays: 90
+
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub sealevel-api-${Env}
+      StageName: prod
+      EndpointConfiguration: { Type: REGIONAL }
+      TracingEnabled: true
+      MethodSettings:
+        - { ResourcePath: '/*', HttpMethod: '*', ThrottlingRateLimit: 50, ThrottlingBurstLimit: 100, MetricsEnabled: true }
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogs.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","user":"$context.authorizer.claims.email","method":"$context.httpMethod","path":"$context.path","status":"$context.status","latencyMs":"$context.responseLatency"}'
+      GatewayResponses:
+        UNAUTHORIZED:
+          StatusCode: 401
+          ResponseTemplates: { application/json: '{"error":"Sign-in required"}' }
+      Auth:
+        DefaultAuthorizer: Cognito
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          Cognito:
+            UserPoolArn: !GetAtt UserPool.Arn
+            Identity: { Header: Authorization }
+
+  ApiWaf:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: !Sub sealevel-api-${Env}
+      Scope: REGIONAL
+      DefaultAction: { Block: {} }
+      VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: !Sub 'sealevel-api-${Env}' }
+      Rules:
+        - Name: rate-limit
+          Priority: 0
+          Action: { Block: {} }
+          Statement: { RateBasedStatement: { Limit: 2000, AggregateKeyType: IP } }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: rate-limit }
+        - Name: aws-common
+          Priority: 1
+          OverrideAction: { None: {} }
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesCommonRuleSet
+              ExcludedRules: [{ Name: SizeRestrictions_BODY }]
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: aws-common }
+        - Name: aws-bad-inputs
+          Priority: 2
+          OverrideAction: { None: {} }
+          Statement: { ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesKnownBadInputsRuleSet } }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: aws-bad-inputs }
+        - Name: aws-sqli
+          Priority: 3
+          OverrideAction: { None: {} }
+          Statement: { ManagedRuleGroupStatement: { VendorName: AWS, Name: AWSManagedRulesSQLiRuleSet } }
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: aws-sqli }
+        - Name: only-via-cloudfront
+          Priority: 10
+          Action: { Allow: {} }
+          Statement:
+            ByteMatchStatement:
+              FieldToMatch: { SingleHeader: { Name: x-origin-verify } }
+              PositionalConstraint: EXACTLY
+              SearchString: !Ref OriginVerifyToken
+              TextTransformations: [{ Priority: 0, Type: NONE }]
+          VisibilityConfig: { SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: via-cloudfront }
+
+  ApiWafAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    DependsOn: ApiprodStage
+    Properties:
+      ResourceArn: !Sub arn:aws:apigateway:${AWS::Region}::/restapis/${Api}/stages/prod
+      WebACLArn: !GetAtt ApiWaf.Arn
+
+  # ---------------------------------------------------------------------------
+  # Lambda functions (one image)
+  # ---------------------------------------------------------------------------
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: "Architect: Lambda (API Handler) - routing, data endpoints, exports (read-only DB user)"
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambda_entry.api_handler] }
+      MemorySize: 2048
+      Timeout: 29
+      ReservedConcurrentExecutions: 20          # caps DB connections (pool_size=1 per container)
+      VpcConfig: { SecurityGroupIds: [!Ref LambdaSecurityGroup], SubnetIds: !Ref PrivateSubnetIds }
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !Ref ReaderSecret
+          CALIBRATION_ENABLED: 'false'
+          EXPORTS_BUCKET: !Ref ExportsBucket
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref ReaderSecret }
+        - Statement:
+            - Effect: Allow
+              Action: [s3:PutObject, s3:GetObject]
+              Resource: !Sub ${ExportsBucket.Arn}/exports/*
+      Events:
+        Proxy:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: '/api/{proxy+}'
+            Method: ANY
+        Health:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/health
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        MapFrame:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/mapframe
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        MarinersFrame:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /api/mariners-mapframe
+            Method: GET
+            Auth:
+              Authorizer: NONE
+
+  DataMathFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: "Architect: Lambda (Data Filtering & Math) - analytics, predictions, QC outliers (read-only DB user)"
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambda_entry.api_handler] }
+      MemorySize: 3008
+      Timeout: 29
+      ReservedConcurrentExecutions: 10
+      VpcConfig: { SecurityGroupIds: [!Ref LambdaSecurityGroup], SubnetIds: !Ref PrivateSubnetIds }
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !Ref ReaderSecret
+          CALIBRATION_ENABLED: 'false'
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref ReaderSecret }
+      Events:
+        Analytics:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/analytics, Method: GET }
+        Predictions:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/predictions, Method: GET }
+        Outliers:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/outliers, Method: GET }
+        OutliersOptimized:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/outliers/optimized, Method: GET }
+
+  CalibrationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Calibration - admin only (benp@mapi.gov.il); writes calibration tables only
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambda_entry.calibration_handler] }
+      MemorySize: 3008
+      Timeout: 29
+      ReservedConcurrentExecutions: 2
+      VpcConfig: { SecurityGroupIds: [!Ref LambdaSecurityGroup], SubnetIds: !Ref PrivateSubnetIds }
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !Ref CalibratorSecret
+          CALIBRATION_ENABLED: 'true'
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref CalibratorSecret }
+      Events:
+        Calibration:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: '/api/calibration/{proxy+}'
+            Method: POST
+
+  SyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: On-prem PostgreSQL → Aurora, every minute
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambdas.sync.main.handler] }
+      MemorySize: 1024
+      Timeout: 55
+      ReservedConcurrentExecutions: 1           # never two syncs at once
+      VpcConfig: { SecurityGroupIds: [!Ref LambdaSecurityGroup], SubnetIds: !Ref PrivateSubnetIds }
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !Ref SyncSecret
+          ONPREM_SECRET_ARN: !Ref OnPremSecretArn
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SyncSecret }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref OnPremSecretArn }
+      Events:
+        EveryMinute:
+          Type: Schedule
+          Properties: { Schedule: rate(1 minute), Enabled: true }
+
+  MigrateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Applies migrations + provisions DB users (invoked by scripts/deploy.sh)
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambdas.migrate.main.handler] }
+      MemorySize: 512
+      Timeout: 300
+      VpcConfig: { SecurityGroupIds: [!Ref LambdaSecurityGroup], SubnetIds: !Ref PrivateSubnetIds }
+      Environment:
+        Variables:
+          MASTER_SECRET_ARN: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+          READER_SECRET_ARN: !Ref ReaderSecret
+          CALIBRATOR_SECRET_ARN: !Ref CalibratorSecret
+          SYNC_SECRET_ARN: !Ref SyncSecret
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !GetAtt AuroraCluster.MasterUserSecret.SecretArn }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref ReaderSecret }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref CalibratorSecret }
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SyncSecret }
+
+  # ---------------------------------------------------------------------------
+  # Frontend: S3 + CloudFront
+  # ---------------------------------------------------------------------------
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub sealevel-frontend-${Env}-${AWS::AccountId}
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+      VersioningConfiguration: { Status: Enabled }
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      LifecycleConfiguration:
+        Rules: [{ Id: old-versions, Status: Enabled, NoncurrentVersionExpiration: { NoncurrentDays: 30 } }]
+
+  ExportsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub sealevel-exports-${Env}-${AWS::AccountId}
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      LifecycleConfiguration:
+        Rules: [{ Id: expire-exports, Status: Enabled, Prefix: exports/, ExpirationInDays: 2 }]
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub sealevel-frontend-${Env}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+            Condition: { StringEquals: { AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}' } }
+
+  SpaRouting:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub sealevel-spa-${Env}
+      AutoPublish: true
+      FunctionConfig: { Comment: Serve index.html for client-side routes, Runtime: cloudfront-js-2.0 }
+      FunctionCode: |
+        function handler(event) {
+          var r = event.request;
+          if (r.uri.indexOf('.') === -1) { r.uri = '/index.html'; }
+          return r;
+        }
+
+  SecurityHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub sealevel-security-${Env}
+        SecurityHeadersConfig:
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true }
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: SAMEORIGIN, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: strict-origin-when-cross-origin, Override: true }
+        CustomHeadersConfig:
+          Items:
+            # Report-only first: verify in the browser console, then switch the header name to enforce.
+            - Header: Content-Security-Policy-Report-Only
+              Override: true
+              Value: !Sub "default-src 'self'; script-src 'self' https://www.govmap.gov.il https://*.govmap.gov.il; style-src 'self' 'unsafe-inline' https://www.govmap.gov.il https://*.govmap.gov.il; img-src 'self' data: blob: https:; font-src 'self' data: https:; connect-src 'self' https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com https://*.govmap.gov.il https://*.tile.openstreetmap.org https://ims.gov.il; frame-src 'self' https://*.govmap.gov.il; worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'self'; form-action 'self'"
+            - { Header: Permissions-Policy, Override: true, Value: 'geolocation=(self), camera=(), microphone=()' }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub Sea Level Dashboard ${Env}
+        WebACLId: !If [HasCloudFrontWaf, !Ref CloudFrontWebAclArn, !Ref AWS::NoValue]
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        DefaultRootObject: index.html
+        Origins:
+          - Id: frontend
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt FrontendOAC.Id
+            S3OriginConfig: { OriginAccessIdentity: '' }
+          - Id: api
+            DomainName: !Sub ${Api}.execute-api.${AWS::Region}.amazonaws.com
+            OriginPath: /prod
+            CustomOriginConfig: { OriginProtocolPolicy: https-only, OriginSSLProtocols: [TLSv1.2] }
+            OriginCustomHeaders: [{ HeaderName: x-origin-verify, HeaderValue: !Ref OriginVerifyToken }]
+        DefaultCacheBehavior:
+          TargetOriginId: frontend
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6            # Managed-CachingOptimized
+          ResponseHeadersPolicyId: !Ref SecurityHeaders
+          FunctionAssociations: [{ EventType: viewer-request, FunctionARN: !GetAtt SpaRouting.FunctionMetadata.FunctionARN }]
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: api
+            ViewerProtocolPolicy: https-only
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad          # Managed-CachingDisabled
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac  # Managed-AllViewerExceptHostHeader
+            ResponseHeadersPolicyId: !Ref SecurityHeaders
+            Compress: true
+
+  # ---------------------------------------------------------------------------
+  # Observability
+  # ---------------------------------------------------------------------------
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription: [{ Protocol: email, Endpoint: !Ref AlarmEmail }]
+
+  ApiErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: API 5xx errors
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions: [{ Name: ApiName, Value: !Sub 'sealevel-api-${Env}' }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  SyncErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: On-prem → Aurora sync failing (data is going stale)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref SyncFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 3
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  CalibrationErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Calibration function errors
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref CalibrationFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref AlarmTopic]
+
+  AuroraCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Aurora at max capacity
+      Namespace: AWS/RDS
+      MetricName: ACUUtilization
+      Dimensions: [{ Name: DBClusterIdentifier, Value: !Ref AuroraCluster }]
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 90
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: [!Ref AlarmTopic]
+
+Outputs:
+  SiteUrl:
+    Value: !Sub https://${Distribution.DomainName}
+  DistributionId:
+    Value: !Ref Distribution
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com
+  GoogleRedirectUri:
+    Description: Add this as an Authorized redirect URI on the Google OAuth client
+    Value: !Sub https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse
+  MigrateFunctionName:
+    Value: !Ref MigrateFunction
+  SyncFunctionName:
+    Value: !Ref SyncFunction
+  AuroraEndpoint:
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  AuroraMasterSecretArn:
+    Value: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+  ExportsBucketName:
+    Value: !Ref ExportsBucket
+  AllowlistParameterName:
+    Value: !Ref AllowlistParameter

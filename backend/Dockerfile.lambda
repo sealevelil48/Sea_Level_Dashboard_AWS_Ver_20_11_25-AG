@@ -1,0 +1,15 @@
+# AWS Lambda container image for all backend functions (API, calibration, sync, migrate, Cognito trigger).
+FROM public.ecr.aws/lambda/python:3.12
+
+COPY requirements-lambda.txt ${LAMBDA_TASK_ROOT}/
+RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements-lambda.txt \
+ && find /var/lang -name "__pycache__" -type d -prune -exec rm -rf {} + \
+ && find /var/lang -name "tests" -path "*site-packages/*" -type d -prune -exec rm -rf {} +
+
+COPY app.py lambda_entry.py config.py security.py mapframe.html mariners_mapframe.html ${LAMBDA_TASK_ROOT}/
+COPY shared/ ${LAMBDA_TASK_ROOT}/shared/
+COPY lambdas/ ${LAMBDA_TASK_ROOT}/lambdas/
+COPY migrations/ ${LAMBDA_TASK_ROOT}/migrations/
+
+# Default; each function overrides ImageConfig.Command in infra/template.yaml
+CMD ["lambda_entry.api_handler"]
