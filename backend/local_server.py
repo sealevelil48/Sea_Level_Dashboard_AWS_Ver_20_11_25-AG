@@ -25,6 +25,14 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 from dotenv import load_dotenv
 
+# Use the OS certificate store for HTTPS (needed when the network inspects
+# HTTPS with its own root certificate, e.g. the Windows production server).
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 # Setup paths
 backend_root = Path(__file__).resolve().parent
 project_root = backend_root.parent
