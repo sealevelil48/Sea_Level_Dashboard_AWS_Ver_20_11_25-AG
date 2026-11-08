@@ -509,7 +509,8 @@ export const useChartJsConfig = ({
       const correctedPoints = previewRows
         .filter(r => {
           if (filters.calibrationCorrectionType === 'offset') {
-            return r.raw_value != null && !isNaN(r.raw_value);
+            const base = r.current_value ?? r.raw_value;
+            return base != null && !isNaN(base);
           } else {
             return r.corrected_value != null && !isNaN(r.corrected_value);
           }
@@ -517,15 +518,16 @@ export const useChartJsConfig = ({
         .map(r => ({
           x: new Date(r.Tab_DateTime),
           y: filters.calibrationCorrectionType === 'offset'
-            ? (r.raw_value + filters.calibrationOffset)  // Calculate in browser for instant updates
+            // Offsets add on top of corrections already applied (what the chart shows now)
+            ? ((r.current_value ?? r.raw_value) + Number(filters.calibrationOffset || 0))
             : r.corrected_value  // Use backend value for interpolate mode
         }));
 
       if (correctedPoints.length > 0) {
         // Only show offset in label for offset mode; interpolate mode doesn't use a simple offset
         const offsetLabel = filters.calibrationCorrectionType === 'offset'
-          ? ` (${calOffset >= 0 ? '+' : ''}${calOffset}m)`
-          : ' (Interpolated)';
+          ? ` (${Number(filters.calibrationOffset) >= 0 ? '+' : ''}${Number(filters.calibrationOffset || 0)}m)`
+          : filters.calibrationCorrectionType === 'relative' ? ' (Relative to reference)' : ' (Interpolated)';
         datasets.push({
           label: `${calStation} Corrected${offsetLabel}`,
           data: correctedPoints,

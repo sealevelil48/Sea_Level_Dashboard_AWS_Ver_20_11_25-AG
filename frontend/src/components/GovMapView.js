@@ -16,7 +16,7 @@ const GovMapView = ({ filters, apiBaseUrl }) => {
         );
         const data = await response.json();
 
-        const stationsResponse = await fetch(`${apiBaseUrl}/stations/map?end_date=${format(filters.endDate, 'yyyy-MM-dd')}`);
+        const stationsResponse = await fetch(`${apiBaseUrl}/api/stations/map?end_date=${format(filters.endDate, 'yyyy-MM-dd')}`);
         const stationsData = await stationsResponse.json();
 
         setMapData(stationsData);
@@ -122,7 +122,7 @@ const GovMapView = ({ filters, apiBaseUrl }) => {
     <iframe
       ref={iframeRef}
       key={format(filters.endDate, 'yyyy-MM-dd')}
-      src={`${apiBaseUrl}/mapframe?end_date=${format(filters.endDate, 'yyyy-MM-dd')}`}
+      src={`${apiBaseUrl}/api/mapframe?end_date=${format(filters.endDate, 'yyyy-MM-dd')}`}
       style={{ 
         width: '100%', 
         height: '500px',

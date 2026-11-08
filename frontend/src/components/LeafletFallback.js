@@ -26,7 +26,7 @@ const LeafletFallback = ({ filters, apiBaseUrl }) => {
         );
         const data = await response.json();
 
-        const stationsResponse = await fetch(`${apiBaseUrl}/stations/map`);
+        const stationsResponse = await fetch(`${apiBaseUrl}/api/stations/map`);
         const stationsData = await stationsResponse.json();
 
         if (!data || !stationsData) {

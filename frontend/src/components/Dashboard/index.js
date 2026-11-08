@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../config';
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { Container, Row, Col, Card, Tabs, Tab, Badge, Button, Spinner } from 'react-bootstrap';
 import { Link } from 'react-router-dom';
@@ -14,6 +15,7 @@ import ErrorBoundary from '../ErrorBoundary';
 import DashboardHeader from './DashboardHeader';
 import DashboardFilters from './DashboardFilters';
 import CalibrationActionBar from './CalibrationActionBar';
+import { useAuth } from '../../auth/AuthProvider';
 import SeaLevelChart from './SeaLevelChart';
 import DashboardMap from './DashboardMap';
 import WarningsCard from '../WarningsCard';
@@ -28,7 +30,6 @@ import apiService from '../../services/apiService';
 import { calculateDelta } from '../../utils/deltaCalculator';
 import { formatDateTime } from '../../utils/dateUtils';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
 
 /**
  * Safely format a number to fixed decimal places
@@ -46,6 +47,7 @@ const safeToFixed = (value, decimals = 3, fallback = '0.000') => {
 };
 
 function Dashboard() {
+  const { isAdmin } = useAuth();
   // Use extracted hooks
   const { filters, filterValues, updateFilter, updateDateRange, toggleModel } = useFilters();
   const {
@@ -503,6 +505,17 @@ function Dashboard() {
     }
   }, [stationsFetched, selectedStations, stations, filterValues, calculateStats]);
 
+  // After a calibration commit or undo, reload the corrected series immediately.
+  const lastCalibrationResult = useRef(null);
+  useEffect(() => {
+    const result = calibrationHook.commitResult;
+    if (result && result !== lastCalibrationResult.current && result.success !== false) {
+      lastCalibrationResult.current = result;
+      apiService.clearCache();
+      fetchData();
+    }
+  }, [calibrationHook.commitResult, fetchData]);
+
   // Debounced fetch trigger
   useEffect(() => {
     if (stations.length > 0 && selectedStations.length > 0) {
@@ -760,6 +773,15 @@ function Dashboard() {
     });
   }, [activeTab, tableData, predictions, selectedStations, filterValues.endDate]);
 
+  const exportCsv = useCallback(async () => {
+    const station = selectedStations.filter((s) => s !== 'All Stations')[0] || 'All Stations';
+    try {
+      await apiService.exportData({ station, startDate: filterValues.startDate, endDate: filterValues.endDate });
+    } catch (err) {
+      alert('Export failed. Please try again.');
+    }
+  }, [selectedStations, filterValues.startDate, filterValues.endDate]);
+
   // Sorted table data
   const sortedTableData = useMemo(() => {
     if (!tableData || tableData.length === 0) return [];
@@ -866,10 +888,11 @@ function Dashboard() {
                 onModelChange={toggleModel}
                 onExportGraph={exportGraph}
                 onExportData={exportTable}
+                onExportCsv={exportCsv}
                 isMobile={isMobile}
                 filtersOpen={filtersOpen}
                 setFiltersOpen={setFiltersOpen}
-                calibrationHook={calibrationHook}
+                calibrationHook={isAdmin ? calibrationHook : null}
                 selectedPoints={selectedPoints}
               />
             </Col>
@@ -1433,15 +1456,21 @@ function Dashboard() {
       </div>
 
       {/* Calibration action bar — floats at bottom when a preview is loaded */}
-      <CalibrationActionBar
-        isVisible={filters.calibrationMode && !!filters.calibrationPreviewData}
-        offset={filters.calibrationOffset}
-        station={calibrationHook.targetStation || ''}
-        isCommitting={calibrationHook.isCommitting}
-        commitResult={calibrationHook.commitResult}
-        onConfirm={calibrationHook.commitCalibration}
-        onCancel={calibrationHook.cancelCalibration}
-      />
+      {isAdmin && (
+        <CalibrationActionBar
+          preview={filters.calibrationMode ? filters.calibrationPreviewData : null}
+          mode={filters.calibrationCorrectionType || 'offset'}
+          offset={filters.calibrationOffset}
+          station={calibrationHook.targetStation || ''}
+          error={calibrationHook.error}
+          isCommitting={calibrationHook.isCommitting}
+          isReverting={calibrationHook.isReverting}
+          commitResult={calibrationHook.commitResult}
+          onConfirm={calibrationHook.commitCalibration}
+          onCancel={calibrationHook.cancelCalibration}
+          onRevert={calibrationHook.revertLastCalibration}
+        />
+      )}
     </ErrorBoundary>
   );
 }

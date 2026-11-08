@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../config';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, Row, Col, Button, Spinner, Tabs, Tab, Table } from 'react-bootstrap';
 import { 
@@ -28,7 +29,7 @@ const MarinersForecastView = ({ apiBaseUrl, isFullscreen = false }) => {
 
   // Stabilize API URL to prevent duplicate calls
   const stableApiUrl = useMemo(() => {
-    return apiBaseUrl || process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
+    return apiBaseUrl || API_BASE_URL;
   }, [apiBaseUrl]);
 
   const fetchForecastData = useCallback(async () => {

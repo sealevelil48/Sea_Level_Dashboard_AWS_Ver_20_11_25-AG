@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useRef } from 'react';
 import apiService from '../services/apiService';
 
 /**
@@ -18,6 +18,15 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
   const [isCommitting, setIsCommitting] = useState(false);
   const [commitResult, setCommitResult] = useState(null);
   const [error, setError] = useState(null);
+  const [isReverting, setIsReverting] = useState(false);
+  // One request id per confirmed commit: a retry or double click re-sends the same id,
+  // and the server applies it once.
+  const pendingCommitId = useRef(null);
+  const newId = () => (window.crypto?.randomUUID ? window.crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (window.crypto.getRandomValues(new Uint8Array(1))[0] & 15);
+        return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+      }));
 
   // The first non-"All Stations" station is the target for calibration
   const targetStation = useMemo(
@@ -55,13 +64,14 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
         params.reference_station = filterValues.calibrationReference;
       }
       const result = await apiService.previewCalibration(params);
+      pendingCommitId.current = null; // new preview → new commit id
       if (!result) {
         setError('Preview returned no data');
         return;
       }
       updateFilter('calibrationPreviewData', result);
     } catch (e) {
-      setError(e.message);
+      setError(e.data?.error || e.message);
     } finally {
       setIsLoadingPreview(false);
     }
@@ -96,15 +106,14 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
         const endISO = new Date(result.malfunction_end).toISOString().slice(0, 16);
         updateFilter('calibrationStart', startISO);
         updateFilter('calibrationEnd', endISO);
-        console.info(`[Calibration] Drift detected: ${result.malfunction_start} to ${result.malfunction_end}`);
+
       } else if (result?.suggested_offset != null) {
         updateFilter('calibrationOffset', result.suggested_offset);
         // Log additional stats from smart suggest algorithm
-        const msg = `Suggested: ${result.suggested_offset}m (${result.confidence} confidence, ${result.before_samples} before / ${result.after_samples} after samples)`;
-        console.info(`[Calibration] ${msg}`);
+        setCommitResult(null);
       }
     } catch (e) {
-      setError(e.message);
+      setError(e.data?.error || e.message);
     } finally {
       setIsLoadingSuggest(false);
     }
@@ -133,18 +142,39 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
         params.reference_station = filterValues.calibrationReference;
         params.expected_gap = filterValues.calibrationExpectedGap ?? 0.0;
       }
-      const result = await apiService.commitCalibration(params);
+      if (!pendingCommitId.current) pendingCommitId.current = newId();
+      const result = await apiService.commitCalibration(params, pendingCommitId.current);
+      pendingCommitId.current = null;
       setCommitResult(result);
       updateFilter('calibrationPreviewData', null);
       updateFilter('calibrationMode', false);
       return true;
     } catch (e) {
-      setError(e.message);
+      setError(e.data?.error || e.message);
       return false;
     } finally {
       setIsCommitting(false);
     }
   }, [targetStation, filterValues, updateFilter]);
+
+  /**
+   * Undo the most recent commit for the target station (restores previous offsets exactly).
+   */
+  const revertLastCalibration = useCallback(async () => {
+    if (!targetStation) return false;
+    setIsReverting(true);
+    setError(null);
+    try {
+      const result = await apiService.revertCalibration(targetStation, newId());
+      setCommitResult({ ...result, reverted: true, station: targetStation });
+      return true;
+    } catch (e) {
+      setError(e.data?.error || e.message);
+      return false;
+    } finally {
+      setIsReverting(false);
+    }
+  }, [targetStation]);
 
   /**
    * Cancel without committing — resets all calibration state.
@@ -168,6 +198,8 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     fetchSuggest,
     commitCalibration,
     cancelCalibration,
+    revertLastCalibration,
+    isReverting,
   };
 };
 

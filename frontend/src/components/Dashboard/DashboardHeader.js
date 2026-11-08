@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import AccessibilityWidget from '../Accessibility/AccessibilityWidget';
+import { UserMenu } from '../../auth/AuthProvider';
 
 const DashboardHeader = ({ isMobile }) => {
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -31,6 +32,7 @@ const DashboardHeader = ({ isMobile }) => {
       <div id="current-time" style={{ fontSize: isMobile ? '11px' : '18px' }}>
         {currentTime.toLocaleString()}
       </div>
+      <UserMenu />
       <AccessibilityWidget />
     </div>
   );

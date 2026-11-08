@@ -1,94 +1,110 @@
-import React from 'react';
-import { Button, Spinner } from 'react-bootstrap';
+import React, { useState } from 'react';
+import { Button, Modal, Spinner } from 'react-bootstrap';
 
 /**
- * Floating action bar that appears at the bottom of the screen when the user
- * has loaded a calibration preview and needs to confirm or cancel.
+ * Bottom action bar for calibration (admin only).
  *
- * Props:
- *   isVisible     {boolean}  — show/hide (controlled by parent)
- *   offset        {number}   — the offset value being applied (metres)
- *   station       {string}   — target station name
- *   isCommitting  {boolean}  — true while the commit request is in-flight
- *   commitResult  {object}   — API response after a successful commit, or null
- *   onConfirm     {Function} — called when the user clicks "Confirm Update"
- *   onCancel      {Function} — called when the user clicks "Cancel" or "Close"
+ * States:
+ *   preview loaded  → summary + "Review & commit" (opens a confirmation dialog)
+ *   committed       → result + "Undo" (reverts exactly, via the audit log)
+ *   error           → message
  */
+const MODE_LABEL = {
+  offset: 'Vertical offset',
+  interpolate: 'Linear interpolation',
+  relative: 'Relative to reference station',
+};
+
+const fmt = (v, digits = 3) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(digits)}`);
+const fmtDate = (s) => (s ? new Date(s).toLocaleString() : '—');
+
 const CalibrationActionBar = ({
-  isVisible,
-  offset,
+  preview,          // preview API response or null
+  mode,             // offset | interpolate | relative
+  offset,           // live slider value (offset mode)
   station,
+  error,
   isCommitting,
+  isReverting,
   commitResult,
   onConfirm,
   onCancel,
+  onRevert,
 }) => {
-  if (!isVisible) return null;
+  const [showConfirm, setShowConfirm] = useState(false);
+  if (!preview && !commitResult && !error) return null;
 
-  const offsetLabel = offset >= 0 ? `+${offset}` : `${offset}`;
+  const rows = preview?.rows_affected ?? preview?.data?.length ?? 0;
+  const change = mode === 'offset'
+    ? `${fmt(offset)} m on every sample`
+    : `${fmt(preview?.change_summary?.min)} to ${fmt(preview?.change_summary?.max)} m`;
+
+  const confirm = async () => {
+    const ok = await onConfirm();
+    if (ok) setShowConfirm(false);
+  };
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        bottom: 0,
-        left: 0,
-        right: 0,
-        zIndex: 9998,
-        background: 'rgba(10, 20, 40, 0.97)',
-        borderTop: '1px solid #2a3f5f',
-        padding: '10px 24px',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '16px',
-        boxShadow: '0 -4px 16px rgba(0,0,0,0.4)',
-      }}
-    >
-      {commitResult ? (
-        /* ── Success state ── */
-        <>
-          <span style={{ color: '#00ff99', fontWeight: 600 }}>
-            ✓ Updated {commitResult.rows_updated?.toLocaleString() ?? '?'} rows for{' '}
-            <strong>{commitResult.station}</strong>
-          </span>
-          <Button variant="secondary" size="sm" onClick={onCancel}>
-            Close
-          </Button>
-        </>
-      ) : (
-        /* ── Pending-confirm state ── */
-        <>
-          <span style={{ color: '#aab', fontSize: '0.85rem' }}>
-            Calibration ready to commit:&nbsp;
-            <strong style={{ color: '#00ff99' }}>{station}</strong>
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            Offset:&nbsp;
-            <strong style={{ color: '#00ff99' }}>{offsetLabel}&nbsp;m</strong>
-          </span>
+    <>
+      <div className="calibration-action-bar" role="region" aria-label="Calibration actions">
+        {error && <span role="alert" className="text-warning me-2">⚠ {error}</span>}
 
-          <Button
-            variant="success"
-            size="sm"
-            disabled={isCommitting}
-            onClick={onConfirm}
-            style={{ minWidth: 130 }}
-          >
-            {isCommitting ? (
-              <>
-                <Spinner animation="border" size="sm" className="me-1" />
-                Saving…
-              </>
-            ) : (
-              '✓ Confirm Update'
+        {commitResult ? (
+          <>
+            <span className="text-success fw-semibold">
+              {commitResult.reverted
+                ? `↺ Reverted the last correction for ${commitResult.station} (${commitResult.rows_restored?.toLocaleString() ?? 0} samples restored)`
+                : `✓ Saved ${commitResult.rows_updated?.toLocaleString() ?? '?'} corrected samples for ${commitResult.station}`}
+            </span>
+            {!commitResult.reverted && (
+              <Button variant="outline-warning" size="sm" onClick={onRevert} disabled={isReverting}>
+                {isReverting ? <Spinner animation="border" size="sm" /> : '↺ Undo'}
+              </Button>
             )}
-          </Button>
+            <Button variant="secondary" size="sm" onClick={onCancel}>Close</Button>
+          </>
+        ) : preview ? (
+          <>
+            <span className="small">
+              <strong>{station}</strong> · {MODE_LABEL[mode] || mode} · {rows.toLocaleString()} samples · {change}
+            </span>
+            <Button variant="success" size="sm" onClick={() => setShowConfirm(true)} disabled={isCommitting}>
+              Review &amp; commit…
+            </Button>
+            <Button variant="outline-light" size="sm" onClick={onCancel} disabled={isCommitting}>Cancel</Button>
+          </>
+        ) : (
+          <Button variant="secondary" size="sm" onClick={onCancel}>Close</Button>
+        )}
+      </div>
 
-          <Button variant="danger" size="sm" onClick={onCancel} disabled={isCommitting}>
-            ✗ Cancel
+      <Modal show={showConfirm} onHide={() => !isCommitting && setShowConfirm(false)} centered>
+        <Modal.Header closeButton={!isCommitting}>
+          <Modal.Title>Commit calibration correction?</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <dl className="row mb-2 small">
+            <dt className="col-5">Station</dt><dd className="col-7">{station}</dd>
+            <dt className="col-5">Method</dt><dd className="col-7">{MODE_LABEL[mode] || mode}</dd>
+            <dt className="col-5">From</dt><dd className="col-7">{fmtDate(preview?.start_datetime)}</dd>
+            <dt className="col-5">To</dt><dd className="col-7">{fmtDate(preview?.end_datetime)}</dd>
+            <dt className="col-5">Samples affected</dt><dd className="col-7">{rows.toLocaleString()}</dd>
+            <dt className="col-5">Change</dt><dd className="col-7">{change}</dd>
+          </dl>
+          <p className="small text-muted mb-0">
+            Raw sensor data is not modified. The correction is recorded in the audit log with your account
+            and can be undone.
+          </p>
+          {error && <div role="alert" className="alert alert-danger py-2 mt-2 mb-0 small">{error}</div>}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowConfirm(false)} disabled={isCommitting}>Back</Button>
+          <Button variant="success" onClick={confirm} disabled={isCommitting}>
+            {isCommitting ? <><Spinner animation="border" size="sm" className="me-1" />Saving…</> : 'Commit correction'}
           </Button>
-        </>
-      )}
-    </div>
+        </Modal.Footer>
+      </Modal>
+    </>
   );
 };
 

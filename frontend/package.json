@@ -27,18 +27,19 @@
     "xlsx": "^0.18.5"
   },
   "scripts": {
-    "start": "cross-env REACT_APP_API_URL=http://127.0.0.1:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
-    "start-govmap": "cross-env HOST=0.0.0.0 PORT=3000 REACT_APP_API_URL=http://85.155.88.90:30886 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
-    "start-external": "cross-env REACT_APP_API_URL=http://85.155.88.90:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
+    "start": "cross-env REACT_APP_AUTH_MODE=disabled REACT_APP_API_URL=http://127.0.0.1:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
+    "start-govmap": "cross-env REACT_APP_AUTH_MODE=disabled HOST=0.0.0.0 PORT=3000 REACT_APP_API_URL=http://85.155.88.90:30886 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
+    "start-external": "cross-env REACT_APP_AUTH_MODE=disabled REACT_APP_API_URL=http://85.155.88.90:30886 HOST=0.0.0.0 PORT=30887 DANGEROUSLY_DISABLE_HOST_CHECK=true react-scripts start",
     "build": "cross-env GENERATE_SOURCEMAP=false react-scripts build",
-    "build-govmap": "cross-env GENERATE_SOURCEMAP=false REACT_APP_API_URL=http://85.155.88.90:30886 react-scripts build",
+    "build-govmap": "cross-env REACT_APP_AUTH_MODE=disabled GENERATE_SOURCEMAP=false REACT_APP_API_URL=http://85.155.88.90:30886 react-scripts build",
     "serve": "npx serve -s build -l 30887",
     "start:prod": "npm run build && npm run serve",
     "start:prod-govmap": "npm run build-govmap && npm run serve",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
     "security-audit": "npm audit --audit-level moderate",
-    "security-fix": "npm audit fix"
+    "security-fix": "npm audit fix",
+    "build:aws": "cross-env GENERATE_SOURCEMAP=false react-scripts build"
   },
   "eslintConfig": {
     "extends": [
@@ -64,5 +65,12 @@
   },
   "devDependencies": {
     "cross-spawn": "^7.0.6"
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^react-router-dom$": "<rootDir>/node_modules/react-router-dom/dist/index.js",
+      "^react-router/dom$": "<rootDir>/node_modules/react-router-dom/node_modules/react-router/dist/development/dom-export.js",
+      "^react-router$": "<rootDir>/node_modules/react-router-dom/node_modules/react-router/dist/development/index.js"
+    }
   }
 }

@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../config';
 /**
  * API Service with proper error handling and request management
  */
@@ -13,7 +14,7 @@ class ApiError extends Error {
 }
 
 class ApiService {
-  constructor(baseURL = process.env.REACT_APP_API_URL || process.env.REACT_APP_BACKEND_URL || 'http://localhost:30886') {
+  constructor(baseURL = API_BASE_URL) {
     this.baseURL = baseURL;
     this.timeout = 60000; // Increased to 60 seconds
     this.activeRequests = new Map();
@@ -66,11 +67,14 @@ class ApiService {
     //   this.activeRequests.get(requestId).abort();
     // }
 
-    const controller = new AbortController();
-    this.activeRequests.set(requestId, controller);
-    
+    const method = (options.method || 'GET').toUpperCase();
+    // Never retry writes: a lost response must not apply a calibration twice.
+    const attempts = method === 'GET' ? this.retryAttempts : 1;
+
     let lastError;
-    for (let attempt = 0; attempt < this.retryAttempts; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const controller = new AbortController();
+      this.activeRequests.set(requestId, controller);
       try {
         const timeoutId = setTimeout(() => controller.abort(), this.timeout);
         
@@ -126,7 +130,7 @@ class ApiService {
         }
         
         // Wait before retry
-        if (attempt < this.retryAttempts - 1) {
+        if (attempt < attempts - 1) {
           await new Promise(resolve => setTimeout(resolve, this.retryDelay * (attempt + 1)));
         }
       }
@@ -340,62 +344,68 @@ class ApiService {
   }
 
   // -------------------------------------------------------------------------
-  // Calibration correction endpoints
-  //
-  // Two-layer auth model:
-  //   Browser → FastAPI:   X-Calibration-Access header (REACT_APP_CALIBRATION_ACCESS)
-  //   FastAPI → Lambda:    X-Calibration-Key injected server-side (never in browser)
-  //
-  // Set REACT_APP_CALIBRATION_ACCESS in the frontend .env to the value of
-  // CALIBRATION_ACCESS_SECRET on the server.
+  // Calibration correction endpoints (admin only — enforced by the API).
+  // Auth: the Cognito ID token is attached by auth/session.js to every API call.
+  // Writes carry a request_id so a repeated request is never applied twice.
   // -------------------------------------------------------------------------
 
-  _calibrationAccessHeaders() {
-    const access = process.env.REACT_APP_CALIBRATION_ACCESS || '';
-    return access ? { 'X-Calibration-Access': access } : {};
+  _post(path, body) {
+    return this.request(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
   }
 
-  async previewCalibration(params) {
-    // params: { station, start_datetime, end_datetime, correction_type?, offset?, reference_station? }
-    try {
-      return await this.request('/api/calibration/preview', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
-        body: JSON.stringify(params),
-      });
-    } catch (error) {
-      console.error('Error previewing calibration:', error);
-      return null;
-    }
+  previewCalibration(params) {
+    return this._post('/api/calibration/preview', params);
   }
 
-  async commitCalibration(params) {
-    // params: { station, start_datetime, end_datetime, correction_type?, offset? }
-    try {
-      return await this.request('/api/calibration/commit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
-        body: JSON.stringify(params),
-      });
-    } catch (error) {
-      console.error('Error committing calibration:', error);
-      return { success: false, error: error.message };
-    }
+  suggestCalibration(params) {
+    return this._post('/api/calibration/suggest', params);
   }
 
-  async suggestCalibration(params) {
-    // params: { station, start_datetime, end_datetime }
-    // Returns: { suggested_offset, confidence, before_median, after_median, before_samples, after_samples }
-    try {
-      return await this.request('/api/calibration/suggest', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...this._calibrationAccessHeaders() },
-        body: JSON.stringify(params),
-      });
-    } catch (error) {
-      console.error('Error suggesting calibration:', error);
-      return null;
+  async commitCalibration(params, requestId) {
+    const result = await this._post('/api/calibration/commit', { ...params, request_id: requestId });
+    this.clearCache(); // show corrected data immediately
+    return result;
+  }
+
+  async revertCalibration(station, requestId) {
+    const result = await this._post('/api/calibration/revert', { station, request_id: requestId });
+    this.clearCache();
+    return result;
+  }
+
+  calibrationHistory(station) {
+    return this._post('/api/calibration/history', station ? { station } : {});
+  }
+
+  /**
+   * Server-side CSV/JSON export (architect: "S3 Bucket — Downloadable Exports").
+   * AWS: the API stores the file in S3 and returns a short-lived URL. On-prem: the file streams back.
+   */
+  async exportData({ station, startDate, endDate, fmt = 'csv' }) {
+    const params = new URLSearchParams({ station, fmt });
+    if (startDate) params.set('start_date', startDate);
+    if (endDate) params.set('end_date', endDate);
+    const res = await fetch(`${this.baseURL}/api/export?${params}`);
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const type = res.headers.get('content-type') || '';
+    const link = document.createElement('a');
+    if (type.includes('application/json') && fmt !== 'json') {
+      const { url, filename } = await res.json();
+      link.href = url;
+      link.download = filename;
+    } else {
+      const blob = await res.blob();
+      link.href = URL.createObjectURL(blob);
+      const cd = res.headers.get('content-disposition') || '';
+      link.download = (cd.match(/filename="([^"]+)"/) || [])[1] || `sea_level.${fmt}`;
     }
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
   }
 
   // Cancel all active requests

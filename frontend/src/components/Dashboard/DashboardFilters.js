@@ -17,6 +17,7 @@ const DashboardFilters = ({
   onModelChange,
   onExportGraph,
   onExportData,
+  onExportCsv,
   isMobile,
   filtersOpen,
   setFiltersOpen,
@@ -60,6 +61,7 @@ const DashboardFilters = ({
                   <div key={station} className="d-flex align-items-center">
                     <Form.Check
                       type="checkbox"
+                      id={`station-${station.replace(/\s+/g, '-').toLowerCase()}`}
                       label={station}
                       checked={selectedStations.includes(station)}
                       onChange={() => onStationChange(station)}
@@ -135,7 +137,8 @@ const DashboardFilters = ({
                 />
               </Form.Group>
 
-              {/* ── Calibration Correction ── */}
+              {/* ── Calibration Correction (admins only: calibrationHook is null otherwise) ── */}
+              {calibrationHook && (
               <Form.Group className="mb-2">
                 <Form.Check
                   type="checkbox"
@@ -146,9 +149,10 @@ const DashboardFilters = ({
                   className="small"
                 />
                 <small className="text-muted d-block" style={{ fontSize: '0.7rem' }}>
-                  Non-destructive offset correction
+                  Non-destructive, audited, reversible
                 </small>
               </Form.Group>
+              )}
 
               {filters.calibrationMode && calibrationHook && (
                 <div style={{
@@ -450,10 +454,21 @@ const DashboardFilters = ({
                     onClick={onExportData}
                     style={{ fontSize: '0.75rem' }}
                   >
-                    Export Data
+                    Export Excel
                   </Button>
                 </Col>
               </Row>
+              {onExportCsv && (
+                <Row className="mt-1">
+                  <Col>
+                    <Button variant="outline-secondary" size="sm" className="w-100 py-1"
+                            onClick={onExportCsv} style={{ fontSize: '0.75rem' }}
+                            title="Full-resolution CSV generated on the server (corrected values)">
+                      Download CSV
+                    </Button>
+                  </Col>
+                </Row>
+              )}
             </Card.Body>
           </Card>
         </div>

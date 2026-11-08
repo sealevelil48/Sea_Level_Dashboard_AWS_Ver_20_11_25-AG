@@ -1,3 +1,5 @@
+// LEGACY (excluded from Jest): written for the old Plotly-based Dashboard.old.js; the current
+// dashboard uses Chart.js. Port the click-handler assertions before re-enabling (rename to .test.js).
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
@@ -5,6 +7,7 @@ import Dashboard from '../Dashboard';
 
 // Mock react-plotly.js
 jest.mock('react-plotly.js', () => {
+  const React = require('react');
   const MockPlot = React.forwardRef((props, ref) => {
     // Store the onClick handler for testing
     React.useEffect(() => {

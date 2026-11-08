@@ -154,7 +154,7 @@ describe('Delta Calculator - Same Station (Different Times)', () => {
 
     expect(result.timeDelta).toBeDefined();
     expect(result.timeDelta.hours).toBe(6);
-    expect(result.timeDelta.minutes).toBe(30);
+    expect(result.timeDelta.minutes).toBe(390); // total minutes (hours is also a total)
     expect(result.timeDelta.formattedString).toContain('6h');
     expect(result.timeDelta.formattedString).toContain('30m');
   });
