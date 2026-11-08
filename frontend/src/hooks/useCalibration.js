@@ -19,6 +19,10 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
   const [commitResult, setCommitResult] = useState(null);
   const [error, setError] = useState(null);
   const [isReverting, setIsReverting] = useState(false);
+  // Phase 3 step 1: typed offset validity + suggestion shown next to the input (not auto-applied)
+  const [offsetValid, setOffsetValid] = useState(true);
+  const [suggestion, setSuggestion] = useState(null);
+  const offsetBlocked = filterValues.calibrationCorrectionType === 'offset' && !offsetValid;
   // One request id per confirmed commit: a retry or double click re-sends the same id,
   // and the server applies it once.
   const pendingCommitId = useRef(null);
@@ -41,6 +45,10 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
   const fetchPreview = useCallback(async () => {
     if (!targetStation) {
       setError('Select a single station first');
+      return;
+    }
+    if (offsetBlocked) {
+      setError('Enter a valid offset first');
       return;
     }
     setIsLoadingPreview(true);
@@ -75,7 +83,7 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     } finally {
       setIsLoadingPreview(false);
     }
-  }, [targetStation, filterValues, updateFilter]);
+  }, [targetStation, filterValues, updateFilter, offsetBlocked]);
 
   /**
    * Auto-detect the largest step change and populate the offset field.
@@ -102,14 +110,17 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
 
       if (result?.drift_detected && result?.malfunction_start && result?.malfunction_end) {
         // Auto-snap to drift window
-        const startISO = new Date(result.malfunction_start).toISOString().slice(0, 16);
-        const endISO = new Date(result.malfunction_end).toISOString().slice(0, 16);
+        // DB timestamps are local (Israel) wall-clock time without a zone: keep them as-is.
+        // (toISOString() converted them to UTC and moved the window 2–3 hours early.)
+        const toLocalInput = (ts) => String(ts).replace(' ', 'T').slice(0, 16);
+        const startISO = toLocalInput(result.malfunction_start);
+        const endISO = toLocalInput(result.malfunction_end);
         updateFilter('calibrationStart', startISO);
         updateFilter('calibrationEnd', endISO);
 
       } else if (result?.suggested_offset != null) {
-        updateFilter('calibrationOffset', result.suggested_offset);
-        // Log additional stats from smart suggest algorithm
+        // Offer the suggestion next to the input; the operator applies it with "Use".
+        setSuggestion({ value: result.suggested_offset, confidence: result.confidence });
         setCommitResult(null);
       }
     } catch (e) {
@@ -126,6 +137,10 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
    */
   const commitCalibration = useCallback(async () => {
     if (!targetStation) return false;
+    if (offsetBlocked) {
+      setError('Enter a valid offset first');
+      return false;
+    }
     setIsCommitting(true);
     setError(null);
     try {
@@ -155,7 +170,7 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     } finally {
       setIsCommitting(false);
     }
-  }, [targetStation, filterValues, updateFilter]);
+  }, [targetStation, filterValues, updateFilter, offsetBlocked]);
 
   /**
    * Undo the most recent commit for the target station (restores previous offsets exactly).
@@ -185,6 +200,8 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     updateFilter('calibrationOffset', 0.0);
     setError(null);
     setCommitResult(null);
+    setSuggestion(null);
+    setOffsetValid(true);
   }, [updateFilter]);
 
   return {
@@ -200,6 +217,10 @@ export const useCalibration = ({ updateFilter, filterValues, selectedStations })
     cancelCalibration,
     revertLastCalibration,
     isReverting,
+    offsetValid,
+    setOffsetValid,
+    offsetBlocked,
+    suggestion,
   };
 };
 

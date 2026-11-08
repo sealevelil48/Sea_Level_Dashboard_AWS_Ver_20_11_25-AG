@@ -25,6 +25,7 @@ const CalibrationActionBar = ({
   station,
   error,
   isCommitting,
+  commitBlocked = false,
   isReverting,
   commitResult,
   onConfirm,
@@ -68,7 +69,8 @@ const CalibrationActionBar = ({
             <span className="small">
               <strong>{station}</strong> · {MODE_LABEL[mode] || mode} · {rows.toLocaleString()} samples · {change}
             </span>
-            <Button variant="success" size="sm" onClick={() => setShowConfirm(true)} disabled={isCommitting}>
+            <Button variant="success" size="sm" onClick={() => setShowConfirm(true)} disabled={isCommitting || commitBlocked}
+                    title={commitBlocked ? 'Enter a valid offset first' : undefined}>
               Review &amp; commit…
             </Button>
             <Button variant="outline-light" size="sm" onClick={onCancel} disabled={isCommitting}>Cancel</Button>
@@ -99,7 +101,7 @@ const CalibrationActionBar = ({
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={() => setShowConfirm(false)} disabled={isCommitting}>Back</Button>
-          <Button variant="success" onClick={confirm} disabled={isCommitting}>
+          <Button variant="success" onClick={confirm} disabled={isCommitting || commitBlocked}>
             {isCommitting ? <><Spinner animation="border" size="sm" className="me-1" />Saving…</> : 'Commit correction'}
           </Button>
         </Modal.Footer>

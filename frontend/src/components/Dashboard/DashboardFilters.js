@@ -1,6 +1,7 @@
 import React from 'react';
 import { Card, Form, Button, Collapse, Row, Col } from 'react-bootstrap';
 import DateRangePicker from '../DateRangePicker';
+import OffsetInput from './OffsetInput';
 import CustomDropdown from '../CustomDropdown';
 
 const DashboardFilters = ({
@@ -256,54 +257,12 @@ const DashboardFilters = ({
                   )}
 
                   {filters.calibrationCorrectionType === 'offset' && (
-                    <Form.Group className="mb-2">
-                      <Form.Label className="small mb-1" style={{ fontSize: '0.7rem' }}>
-                        Offset Adjustment (metres)
-                      </Form.Label>
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' }}>
-                        <Form.Control
-                          type="number"
-                          size="sm"
-                          step="0.001"
-                          min="-10"
-                          max="10"
-                          value={filters.calibrationOffset ?? 0}
-                          onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value) || 0)}
-                          style={{ fontSize: '0.75rem', flex: 0.35 }}
-                          placeholder="0.000"
-                        />
-                        <input
-                          type="range"
-                          min="-10"
-                          max="10"
-                          step="0.001"
-                          value={filters.calibrationOffset ?? 0}
-                          onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value))}
-                          style={{
-                            flex: 1,
-                            height: '6px',
-                            cursor: 'pointer',
-                          }}
-                          title="Drag to adjust offset"
-                        />
-                        <div style={{
-                          minWidth: '50px',
-                          textAlign: 'center',
-                          fontSize: '0.75rem',
-                          fontWeight: 'bold',
-                          color: '#00ff99',
-                          backgroundColor: 'rgba(0,0,0,0.3)',
-                          padding: '4px 6px',
-                          borderRadius: '3px',
-                          border: '1px solid #2a3f5f'
-                        }}>
-                          {filters.calibrationOffset >= 0 ? '+' : ''}{(filters.calibrationOffset ?? 0).toFixed(3)}m
-                        </div>
-                      </div>
-                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
-                        Drag slider or type exact value
-                      </small>
-                    </Form.Group>
+                    <OffsetInput
+                      value={filters.calibrationOffset ?? 0}
+                      onChange={(v) => onFilterChange('calibrationOffset', v)}
+                      onValidity={calibrationHook.setOffsetValid}
+                      suggestion={calibrationHook.suggestion}
+                    />
                   )}
 
                   {(() => {
@@ -344,7 +303,7 @@ const DashboardFilters = ({
                     className="w-100"
                     style={{ fontSize: '0.75rem' }}
                     onClick={calibrationHook.fetchPreview}
-                    disabled={calibrationHook.isLoadingPreview}
+                    disabled={calibrationHook.isLoadingPreview || calibrationHook.offsetBlocked}
                   >
                     {calibrationHook.isLoadingPreview ? 'Loading…' : '👁 Preview Correction'}
                   </Button>

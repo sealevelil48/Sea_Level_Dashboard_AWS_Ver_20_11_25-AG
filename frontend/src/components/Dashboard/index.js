@@ -1464,6 +1464,7 @@ function Dashboard() {
           station={calibrationHook.targetStation || ''}
           error={calibrationHook.error}
           isCommitting={calibrationHook.isCommitting}
+          commitBlocked={calibrationHook.offsetBlocked}
           isReverting={calibrationHook.isReverting}
           commitResult={calibrationHook.commitResult}
           onConfirm={calibrationHook.commitCalibration}
