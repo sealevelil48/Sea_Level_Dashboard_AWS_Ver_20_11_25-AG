@@ -8,6 +8,9 @@ import numpy as np
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)  # defined before the optional imports that log
+
 # Add paths for shared modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.join(current_dir, '..', '..')
@@ -55,8 +58,6 @@ except ImportError:
     logger.warning("Baseline integration not available for predictions")
     BASELINE_INTEGRATION_AVAILABLE = False
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Cache for models (in production, use Redis or similar)
 MODEL_CACHE = {}
