@@ -89,4 +89,5 @@ the on-prem build scripts use `REACT_APP_AUTH_MODE=disabled`; the backend then n
 and **calibration is locked** (the old shared-secret header was readable in the browser bundle).
 Once the pool exists, set the Cognito values in `backend/.env` and build the frontend with
 `REACT_APP_AUTH_MODE=cognito` to get the same Google sign-in on-prem — add
-`http://<server>:30886/auth/callback` to `ExtraCallbackUrls`.
+`https://<server-hostname>/auth/callback` to `ExtraCallbackUrls`. Cognito accepts plain `http://` callback
+URLs only for `localhost`, so the on-prem server needs HTTPS (e.g. the existing nginx with a certificate).
