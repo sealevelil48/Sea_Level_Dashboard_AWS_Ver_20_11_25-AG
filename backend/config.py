@@ -6,7 +6,8 @@ import os
 import json
 import logging
 from typing import List, Dict, Any, Optional
-from pydantic import BaseSettings, validator
+from pydantic import field_validator
+from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -130,7 +131,8 @@ class Settings(BaseSettings):
     max_data_points: int = 10000
     request_timeout: int = 30
 
-    @validator('cors_origins', pre=True)
+    @field_validator("cors_origins", mode="before")
+    @classmethod
     def parse_cors_origins(cls, v):
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(',')]

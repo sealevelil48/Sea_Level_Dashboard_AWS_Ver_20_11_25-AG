@@ -3,4 +3,4 @@
 cd /d "%~dp0"
 
 :: Activate virtual environment and run the server
-call venv\Scripts\activate && python local_server.py
+call venv\Scripts\activate && python local_server_optimized.py

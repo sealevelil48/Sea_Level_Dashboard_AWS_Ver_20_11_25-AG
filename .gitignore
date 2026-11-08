@@ -208,3 +208,9 @@ credentials
 # ===== Local Secrets Backup =====
 sealevel-secrets-backup/
 secrets-backup/
+
+# Deployment parameters (per environment)
+infra/params.*.env
+!infra/params.example.env
+!.env.example
+!backend/.env.example
