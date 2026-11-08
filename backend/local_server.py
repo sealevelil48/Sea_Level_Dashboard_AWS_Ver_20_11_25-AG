@@ -771,13 +771,14 @@ async def get_sea_forecast():
         return JSONResponse(
             content=forecast_payload,
             status_code=200,
-            headers={"Cache-Control": "public, max-age=1800"}
+            # Short browser cache; IMS updates the file daily and stale copies are flagged in metadata
+            headers={"Cache-Control": "public, max-age=300"}
         )
     except Exception as e:
         logger.exception("Error in get_sea_forecast")
         return JSONResponse(
-            content={"error": str(e), "forecast": []},
-            status_code=500
+            content={"error": str(e), "forecast": [], "locations": []},
+            status_code=503
         )
 
 @app.get("/api/ims-warnings")
@@ -1408,13 +1409,14 @@ async def get_sea_forecast_direct():
         return JSONResponse(
             content=forecast_payload,
             status_code=200,
-            headers={"Cache-Control": "public, max-age=1800"}
+            # Short browser cache; IMS updates the file daily and stale copies are flagged in metadata
+            headers={"Cache-Control": "public, max-age=300"}
         )
     except Exception as e:
         logger.exception("Error in get_sea_forecast_direct")
         return JSONResponse(
             content={"error": str(e), "locations": []},
-            status_code=500
+            status_code=503
         )
 
 # ---------------------------------------------------------------------------

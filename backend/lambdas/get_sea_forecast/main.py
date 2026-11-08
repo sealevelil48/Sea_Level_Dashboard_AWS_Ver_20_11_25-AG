@@ -1,8 +1,73 @@
 import json
+import os
+import tempfile
+import time
 import xml.etree.ElementTree as ET
 import urllib.request
-import urllib.error
-from datetime import datetime
+from datetime import datetime, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+    ISRAEL_TZ = ZoneInfo("Asia/Jerusalem")
+except Exception:  # tzdata missing (e.g. bare Windows venv): fixed +02:00 is close enough for an age check
+    from datetime import timedelta
+    ISRAEL_TZ = timezone(timedelta(hours=2))
+
+IMS_SEA_FORECAST_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_sea.xml"
+IMS_UV_URL = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_rad.xml"
+# IMS issues the sea forecast daily; anything older than this is flagged stale.
+MAX_ISSUE_AGE_HOURS = 36
+# Bot filters in front of ims.gov.il can reject the default "Python-urllib/x.y"
+# agent. Previously any fetch failure silently served hard-coded 2025 data.
+_IMS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) SeaLevelDashboard/1.1",
+    "Accept": "application/xml,text/xml;q=0.9,*/*;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+_LAST_GOOD_PATH = os.path.join(tempfile.gettempdir(), "ims_isr_sea_last_good.xml")
+_last_good_mem = None  # (bytes, fetched_at_iso)
+
+
+def _fetch_ims_bytes(url, timeout=10, attempts=3):
+    """GET an IMS file with a browser-like UA, a cache-buster and retries."""
+    sep = "&" if "?" in url else "?"
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            req = urllib.request.Request(f"{url}{sep}_={int(time.time())}", headers=_IMS_HEADERS)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except Exception as e:  # URLError, HTTPError, socket.timeout/TimeoutError, ConnectionResetError
+            last_exc = e
+            if attempt < attempts - 1:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_exc
+
+
+def _save_last_good(raw, fetched_at):
+    global _last_good_mem
+    _last_good_mem = (raw, fetched_at)
+    try:
+        with open(_LAST_GOOD_PATH, "wb") as f:
+            f.write(raw)
+        with open(_LAST_GOOD_PATH + ".ts", "w", encoding="utf-8") as f:
+            f.write(fetched_at)
+    except OSError:
+        pass
+
+
+def _load_last_good():
+    if _last_good_mem is not None:
+        return _last_good_mem
+    try:
+        with open(_LAST_GOOD_PATH, "rb") as f:
+            raw = f.read()
+        with open(_LAST_GOOD_PATH + ".ts", encoding="utf-8") as f:
+            ts = f.read().strip()
+        return raw, ts
+    except OSError:
+        return None
 
 
 def _normalize_city_name(name):
@@ -81,25 +146,15 @@ def _uv_severity_label(uv_value):
 
 def _build_uv_payload():
     """Fetch and filter the IMS UV feed down to the cities relevant to the sea forecast."""
-    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_rad.xml"
+    url = IMS_UV_URL
 
     try:
         _safe_print(f"Fetching UV XML from: {url}")
-        with urllib.request.urlopen(url, timeout=10) as response:
-            raw_data = response.read()
-            for encoding in ['utf-8', 'iso-8859-1', 'windows-1255', 'iso-8859-8', 'cp1255']:
-                try:
-                    xml_data = raw_data.decode(encoding)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            else:
-                xml_data = raw_data.decode('utf-8', errors='ignore')
-    except (urllib.error.URLError, UnicodeDecodeError) as e:
-        _safe_print(f"Failed to fetch/decode UV XML: {e}")
+        root = ET.fromstring(_fetch_ims_bytes(url, attempts=2))
+    except Exception as e:  # UV is optional enrichment; never fail the forecast over it
+        _safe_print(f"Failed to fetch/parse UV XML: {e}")
         return {}
 
-    root = ET.fromstring(xml_data)
     uv_payload = {}
 
     for location in root.findall('Location'):
@@ -142,173 +197,57 @@ def _build_uv_payload():
 
 
 def build_forecast_payload():
-    """Fetch and parse IMS sea forecast XML data into a JSON payload."""
-    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_sea.xml"
+    """Fetch and parse IMS sea forecast XML data into a JSON payload.
+
+    Freshness contract (fields under ``metadata``):
+      - ``source``: "live" (fetched now) or "cache" (IMS unreachable, last good copy)
+      - ``fetched_at``: UTC ISO time the XML was actually downloaded from IMS
+      - ``stale``: True if served from cache or the IMS issue time is > 36 h old
+      - ``fetch_error``: why the live fetch failed (only when source == "cache")
+
+    If IMS is unreachable and no good copy has ever been fetched, this raises
+    instead of serving invented data (the old hard-coded 2025-09-17 fallback).
+    """
+    url = IMS_SEA_FORECAST_URL
+    source = "live"
+    fetch_error = None
 
     try:
-        _safe_print(f"Fetching XML from: {url}")
-        with urllib.request.urlopen(url, timeout=10) as response:
-            raw_data = response.read()
-            for encoding in ['utf-8', 'iso-8859-1', 'windows-1255', 'iso-8859-8', 'cp1255']:
-                try:
-                    xml_data = raw_data.decode(encoding)
-                    _safe_print(f"Successfully decoded with {encoding}, length: {len(xml_data)}")
-                    break
-                except UnicodeDecodeError:
-                    continue
-            else:
-                xml_data = raw_data.decode('utf-8', errors='ignore')
-                _safe_print(f"Decoded with errors ignored, length: {len(xml_data)}")
-    except (urllib.error.URLError, UnicodeDecodeError) as e:
-        _safe_print(f"Failed to fetch/decode XML: {e}, using fallback data")
-        xml_data = """<IsraelSeaForecastMorning>
-<Originator>
-<Organization>Israel Meteorological Service</Organization>
-<Generator>Global Distribution of Meteorological Information</Generator>
-</Originator>
-<Identification>
-<Title>Israel Sea Forecast (Morning)</Title>
-<IssueDateTime>2025-09-17 00:03</IssueDateTime>
-</Identification>
-<Location>
-<LocationMetaData>
-<LocationId>213</LocationId>
-<LocationNameEng>Southern Coast</LocationNameEng>
-<LocationNameHeb>החוף הדרומי</LocationNameHeb>
-</LocationMetaData>
-<LocationData>
-<TimeUnitData>
-<DateTimeFrom>2025-09-17 08:00</DateTimeFrom>
-<DateTimeTo>2025-09-17 20:00</DateTimeTo>
-<Element>
-<ElementName>Sea status and waves height</ElementName>
-<ElementValue>50 / 50-80</ElementValue>
-</Element>
-<Element>
-<ElementName>Sea temperature</ElementName>
-<ElementValue>30</ElementValue>
-</Element>
-<Element>
-<ElementName>Wind direction and speed</ElementName>
-<ElementValue>225-315/10-25</ElementValue>
-</Element>
-</TimeUnitData>
-</LocationData>
-</Location>
-<Location>
-<LocationMetaData>
-<LocationId>210</LocationId>
-<LocationNameEng>Central Coast</LocationNameEng>
-<LocationNameHeb>החוף המרכזי</LocationNameHeb>
-</LocationMetaData>
-<LocationData>
-<TimeUnitData>
-<DateTimeFrom>2025-09-17 08:00</DateTimeFrom>
-<DateTimeTo>2025-09-17 20:00</DateTimeTo>
-<Element>
-<ElementName>Sea status and waves height</ElementName>
-<ElementValue>50 / 50-80</ElementValue>
-</Element>
-<Element>
-<ElementName>Sea temperature</ElementName>
-<ElementValue>30</ElementValue>
-</Element>
-<Element>
-<ElementName>Wind direction and speed</ElementName>
-<ElementValue>225-315/10-25</ElementValue>
-</Element>
-</TimeUnitData>
-</LocationData>
-</Location>
-<Location>
-<LocationMetaData>
-<LocationId>212</LocationId>
-<LocationNameEng>Northern Coast</LocationNameEng>
-<LocationNameHeb>החוף הצפוני</LocationNameHeb>
-</LocationMetaData>
-<LocationData>
-<TimeUnitData>
-<DateTimeFrom>2025-09-17 08:00</DateTimeFrom>
-<DateTimeTo>2025-09-17 20:00</DateTimeTo>
-<Element>
-<ElementName>Sea status and waves height</ElementName>
-<ElementValue>50 / 50-80</ElementValue>
-</Element>
-<Element>
-<ElementName>Sea temperature</ElementName>
-<ElementValue>29</ElementValue>
-</Element>
-<Element>
-<ElementName>Wind direction and speed</ElementName>
-<ElementValue>225-315/10-25</ElementValue>
-</Element>
-</TimeUnitData>
-</LocationData>
-</Location>
-<Location>
-<LocationMetaData>
-<LocationId>211</LocationId>
-<LocationNameEng>Sea of Galilee</LocationNameEng>
-<LocationNameHeb>כנרת</LocationNameHeb>
-</LocationMetaData>
-<LocationData>
-<TimeUnitData>
-<DateTimeFrom>2025-09-17 08:00</DateTimeFrom>
-<DateTimeTo>2025-09-17 20:00</DateTimeTo>
-<Element>
-<ElementName>Sea status and waves height</ElementName>
-<ElementValue>40 / 30-80</ElementValue>
-</Element>
-<Element>
-<ElementName>Sea temperature</ElementName>
-<ElementValue>29</ElementValue>
-</Element>
-<Element>
-<ElementName>Wind direction and speed</ElementName>
-<ElementValue>225-315/10-35</ElementValue>
-</Element>
-</TimeUnitData>
-</LocationData>
-</Location>
-<Location>
-<LocationMetaData>
-<LocationId>214</LocationId>
-<LocationNameEng>Gulf of Eilat</LocationNameEng>
-<LocationNameHeb>מפרץ אילת</LocationNameHeb>
-</LocationMetaData>
-<LocationData>
-<TimeUnitData>
-<DateTimeFrom>2025-09-17 08:00</DateTimeFrom>
-<DateTimeTo>2025-09-17 20:00</DateTimeTo>
-<Element>
-<ElementName>Sea status and waves height</ElementName>
-<ElementValue>30 / 20-40</ElementValue>
-</Element>
-<Element>
-<ElementName>Sea temperature</ElementName>
-<ElementValue>27</ElementValue>
-</Element>
-<Element>
-<ElementName>Wind direction and speed</ElementName>
-<ElementValue>360-045/15-30</ElementValue>
-</Element>
-</TimeUnitData>
-</LocationData>
-</Location>
-</IsraelSeaForecastMorning>"""
+        raw_data = _fetch_ims_bytes(url)
+        root = ET.fromstring(raw_data)  # bytes: honours the XML's declared ISO-8859-8 encoding
+        if root.find('.//IssueDateTime') is None or not root.findall('Location'):
+            raise ValueError("IMS sea forecast XML has no IssueDateTime/Location elements")
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        _save_last_good(raw_data, fetched_at)
+    except Exception as e:  # network, HTTP 4xx/5xx, timeout, malformed XML
+        fetch_error = f"{type(e).__name__}: {e}"
+        _safe_print(f"Live IMS forecast fetch failed ({fetch_error}); trying last good copy")
+        cached = _load_last_good()
+        if cached is None:
+            raise RuntimeError(f"IMS sea forecast unavailable and no cached copy: {fetch_error}")
+        raw_data, fetched_at = cached
+        root = ET.fromstring(raw_data)
+        source = "cache"
 
-    _safe_print("Parsing XML data...")
-    root = ET.fromstring(xml_data)
     uv_payload = _build_uv_payload()
 
     forecast_data = {
         "metadata": {
             "organization": root.find('.//Organization').text if root.find('.//Organization') is not None else '',
             "title": root.find('.//Title').text if root.find('.//Title') is not None else '',
-            "issue_datetime": root.find('.//IssueDateTime').text if root.find('.//IssueDateTime') is not None else ''
+            "issue_datetime": root.find('.//IssueDateTime').text if root.find('.//IssueDateTime') is not None else '',
+            "source": source,
+            "fetched_at": fetched_at,
+            "fetch_error": fetch_error,
         },
         "locations": []
     }
+    issue_dt = _parse_datetime(forecast_data["metadata"]["issue_datetime"])
+    issue_age_h = None
+    if issue_dt is not None:
+        issue_age_h = (datetime.now(ISRAEL_TZ).replace(tzinfo=None) - issue_dt).total_seconds() / 3600
+    forecast_data["metadata"]["issue_age_hours"] = round(issue_age_h, 1) if issue_age_h is not None else None
+    forecast_data["metadata"]["stale"] = source != "live" or (issue_age_h is not None and issue_age_h > MAX_ISSUE_AGE_HOURS)
     _safe_print(f"Parsed metadata: {forecast_data['metadata']}")
 
     for location in root.findall('Location'):
@@ -430,7 +369,7 @@ def lambda_handler(event, context):
     except Exception as e:
         _safe_print(f"Error in lambda_handler: {e}")
         return {
-            'statusCode': 500,
+            'statusCode': 503,
             'headers': {
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*'

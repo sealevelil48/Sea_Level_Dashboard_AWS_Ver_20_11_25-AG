@@ -128,6 +128,13 @@ const SeaForecastView = ({ apiBaseUrl }) => {
                 {forecastData.metadata?.organization} | 
                 Issued: {formatDateTime(forecastData.metadata?.issue_datetime)}
               </small>
+              {forecastData.metadata?.stale && (
+                <div className="mt-1" style={{ color: '#ffc107', fontSize: '0.8rem' }}>
+                  ⚠️ {forecastData.metadata?.source === 'cache'
+                    ? 'IMS is unreachable right now - showing the last forecast received'
+                    : 'IMS has not published a newer forecast yet'}
+                </div>
+              )}
             </Col>
             <Col xs="auto">
               <Button 

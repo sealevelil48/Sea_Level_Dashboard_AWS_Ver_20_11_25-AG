@@ -4,6 +4,7 @@ const WarningsCard = ({ apiBaseUrl }) => {
   const [warnings, setWarnings] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [fetchFailed, setFetchFailed] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isMobile, setIsMobile] = useState(window.innerWidth <= 768);
   const [touchStart, setTouchStart] = useState(null);
@@ -22,9 +23,15 @@ const WarningsCard = ({ apiBaseUrl }) => {
         if (response.ok) {
           const data = await response.json();
           setWarnings(data.warnings || []);
+          setCurrentIndex(0);
+          setFetchFailed(false);
+        } else {
+          // Keep whatever we showed last; don't claim "No Active Warnings" when IMS is unreachable
+          setFetchFailed(true);
         }
       } catch (error) {
         console.error('Error fetching warnings:', error);
+        setFetchFailed(true);
       } finally {
         setLoading(false);
       }
@@ -54,8 +61,12 @@ const WarningsCard = ({ apiBaseUrl }) => {
     }
   };
 
-  const getWarningBadge = (description) => {
-    const text = description.toLowerCase();
+  const getWarningBadge = (warning) => {
+    const bySeverity = { red: '#dc3545', orange: '#fd7e14', yellow: '#ffc107' };
+    if (bySeverity[warning.severity]) {
+      return { color: bySeverity[warning.severity], text: warning.severity.toUpperCase() };
+    }
+    const text = (warning.description || '').toLowerCase();
     if (text.includes('red')) return { color: '#dc3545', text: 'RED' };
     if (text.includes('orange')) return { color: '#fd7e14', text: 'ORANGE' };
     if (text.includes('yellow')) return { color: '#ffc107', text: 'YELLOW' };
@@ -70,7 +81,9 @@ const WarningsCard = ({ apiBaseUrl }) => {
   };
 
   const getFullWarningText = (warning) => {
-    return warning.description?.replace(/^(red|orange|yellow)\s+warning\s+of\s+/i, '') || warning.title || '';
+    return warning.description
+      ?.replace(/^update:\s*/i, '')
+      .replace(/^(red|orange|yellow)\s+warning\s+(of|for)\s+/i, '') || warning.title || '';
   };
 
   const getCompactWarningText = (warning) => {
@@ -103,7 +116,8 @@ const WarningsCard = ({ apiBaseUrl }) => {
   };
 
   const renderWarningWithBadge = (warning, index) => {
-    const badge = getWarningBadge(warning.description);
+    const badge = getWarningBadge(warning);
+    const isSea = warning.category === 'sea';
     const displayText = getCompactWarningText(warning);
     
     return (
@@ -135,6 +149,22 @@ const WarningsCard = ({ apiBaseUrl }) => {
             {badge.text}
           </span>
         )}
+        {isSea && (
+          <span
+            title="IMS sea warning"
+            style={{
+              backgroundColor: '#0d6efd',
+              color: 'white',
+              padding: '2px 6px',
+              borderRadius: '3px',
+              fontSize: '0.7em',
+              fontWeight: 'bold',
+              marginRight: '6px'
+            }}
+          >
+            🌊 SEA
+          </span>
+        )}
         {displayText}
       </div>
     );
@@ -152,6 +182,7 @@ const WarningsCard = ({ apiBaseUrl }) => {
 
   const currentWarning = warnings[currentIndex];
   const warningCount = warnings.length;
+  const seaCount = warnings.filter(w => w.category === 'sea').length;
   const color = currentWarning ? getWarningColor(currentWarning.severity) : '#28a745';
 
   return (
@@ -168,7 +199,7 @@ const WarningsCard = ({ apiBaseUrl }) => {
       <div className="card-body" style={{ padding: isMobile ? '8px 12px' : '12px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
           <h6 className="card-title mb-0" style={{ color, fontSize: isMobile ? '0.85rem' : '1rem' }}>
-            ⚠️ IMS ALERTS ({warningCount})
+            ⚠️ IMS ALERTS ({warningCount}){seaCount > 0 && !isMobile ? ` · 🌊 ${seaCount} sea` : ''}
           </h6>
           {isMobile && isExpanded && warningCount > 1 && (
             <div style={{ fontSize: '0.7rem', color: '#4dabf5' }}>
@@ -178,7 +209,11 @@ const WarningsCard = ({ apiBaseUrl }) => {
         </div>
         
         <div style={{ fontSize: isMobile ? '0.75rem' : '0.85rem', lineHeight: '1.4' }}>
-          {warningCount === 0 ? (
+          {warningCount === 0 && fetchFailed ? (
+            <div className="text-warning">
+              IMS alerts unavailable - retrying
+            </div>
+          ) : warningCount === 0 ? (
             <div className="text-success">
               ✓ No Active Warnings
             </div>
