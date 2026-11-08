@@ -1,0 +1,55 @@
+name: Deploy
+
+# Manual deploys only. Uses GitHub OIDC → an IAM role in the company account (no stored AWS keys).
+# Repository settings → Environments → dev / prod:
+#   variables: AWS_DEPLOY_ROLE_ARN, and every key from infra/params.example.env
+#   prod: add required reviewers.
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Environment
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.env }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.env }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: il-central-1
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Write parameters
+        run: |
+          cat > /tmp/params.env <<PARAMS
+          AWS_REGION=il-central-1
+          VPC_ID=${{ vars.VPC_ID }}
+          PRIVATE_SUBNET_IDS=${{ vars.PRIVATE_SUBNET_IDS }}
+          ONPREM_CIDR=${{ vars.ONPREM_CIDR }}
+          ONPREM_SECRET_ARN=${{ vars.ONPREM_SECRET_ARN }}
+          GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET_NAME=${{ vars.GOOGLE_CLIENT_SECRET_NAME }}
+          COGNITO_DOMAIN_PREFIX=${{ vars.COGNITO_DOMAIN_PREFIX }}
+          ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}
+          ALLOWED_USERS=${{ vars.ALLOWED_USERS }}
+          ALARM_EMAIL=${{ vars.ALARM_EMAIL }}
+          PARAMS
+      - run: scripts/deploy.sh ${{ inputs.env }} /tmp/params.env

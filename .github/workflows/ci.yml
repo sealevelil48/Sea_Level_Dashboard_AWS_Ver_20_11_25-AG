@@ -2,69 +2,79 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [main, 'feature/**']
   pull_request:
-    branches: [ main ]
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  backend:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:15
+        image: postgres:16
         env:
-          POSTGRES_USER: user
-          POSTGRES_PASSWORD: password
-          POSTGRES_DB: testdb
-        ports:
-          - 5432:5432
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: sealevel_test
+        ports: ['5432:5432']
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: backend
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-          allow-prereleases: false
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            pkg-config \
-            libpq-dev \
-            build-essential \
-            python3-dev \
-            libfreetype6-dev \
-            libpng-dev
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-- name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip setuptools wheel
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f backend/requirements.txt ]; then pip install -r backend/requirements.txt; fi
-
-      - name: Run tests
-        run: |
-          pytest -q --tb=short
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-lambda.txt
+      - name: Install
+        run: pip install -r requirements-lambda.txt pytest httpx flake8
+      - name: Lint (errors only)
+        run: flake8 --select=E9,F63,F7,F82 --exclude=tests/legacy,optimizations,venv .
+      - name: Test (real PostgreSQL)
         env:
-          DATABASE_URL: postgresql://user:password@localhost:5432/testdb
-          ENV: test
-          DEBUG: false
+          TEST_DB_URI: postgresql+psycopg2://ci:ci@localhost:5432/sealevel_test
+        run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Unit tests
+        run: npx react-scripts test --watchAll=false --passWithNoTests
+        env:
+          CI: 'true'
+      - name: Build
+        run: npm run build
+        env:
+          CI: 'false'            # existing no-console warnings are not yet errors
+          REACT_APP_API_URL: ''
+      - name: Audit (production dependencies)
+        run: npm audit --omit=dev --audit-level=critical
+        continue-on-error: true
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install cfn-lint
+      - run: cfn-lint --regions il-central-1 -- infra/template.yaml
+      - name: Build Lambda image (no push)
+        run: docker build --platform linux/amd64 -f backend/Dockerfile.lambda -t sealevel-backend:ci backend
