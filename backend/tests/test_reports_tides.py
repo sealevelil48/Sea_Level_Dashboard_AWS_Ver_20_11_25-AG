@@ -115,3 +115,23 @@ def test_history_file_values_win_and_chart_is_made(engine):
     assert hist[1958] == pytest.approx(0.055) and hist[2025] == pytest.approx(0.150) and len(hist) == 68
     rep = reports.yearly_report(engine, 2026, history=hist)
     assert "שנתי/מפלס הים התיכון בישראל 1958-2026.png" in rep.files
+
+
+def test_station_check_reproduces_2025_decision():
+    """Monthly means from Ben's 'sealevel2025(12)': Haifa and Acre are left out, the year is ~0.149 m (official 0.150)."""
+    from shared.reports import MEDITERRANEAN, check_stations, network_annual_mean
+    sheet = {  # month: (Acre, Haifa, Yafo, Ashdod, Ashkelon) monthly means, None = no value
+        1: (0.103, 0.111, 0.012, 0.013, 0.010), 2: (0.044, 0.082, -0.020, -0.026, -0.017),
+        3: (0.133, 0.090, 0.060, 0.051, 0.070), 4: (0.149, 0.109, 0.073, 0.073, 0.074),
+        5: (0.176, 0.149, 0.100, 0.100, 0.099), 6: (0.259, 0.220, 0.175, 0.174, 0.176),
+        7: (0.329, 0.292, 0.256, 0.254, 0.258), 8: (0.384, 0.306, 0.315, 0.306, 0.303),
+        9: (0.315, 0.305, 0.255, 0.243, 0.231), 10: (0.237, None, 0.182, 0.185, 0.180),
+        11: (0.273, None, 0.213, 0.212, None), 12: (0.250, None, None, 0.190, None)}
+    names = ["Acre", "Haifa", "Yafo", "Ashdod", "Ashkelon"]
+    monthly = {m: {st: {"mean": v, "days": 30} for st, v in zip(names, vals) if v is not None}
+               for m, vals in sheet.items()}
+    included, notes = check_stations(monthly, MEDITERRANEAN)
+    assert included == ["Yafo", "Ashdod", "Ashkelon"]
+    assert any(n.startswith("Acre vs Yafo") and "left out" in n for n in notes)
+    assert any(n.startswith("Haifa vs Yafo") and "left out" in n for n in notes)
+    assert network_annual_mean(monthly, included) == pytest.approx(0.149, abs=0.0015)

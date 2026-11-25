@@ -50,10 +50,25 @@ MEDITERRANEAN = ["Acre", "Haifa", "Yafo", "Ashdod", "Ashkelon"]
 REFERENCE_STATIONS = [s.strip() for s in os.getenv("REPORT_REFERENCE_STATIONS", ",".join(MEDITERRANEAN)).split(",")
                       if s.strip()]
 ASSETS = Path(__file__).resolve().parents[1] / "reports" / "assets"
+
+# Station comparison (Ben, 25.11.2026): Yafo is the baseline. Expected level relative to Yafo, in mm:
+# Ashdod and Ashkelon about −4 (typically −2), Haifa +4, Acre +8. A station whose year-level differs from
+# this by more than OFFSET_TOLERANCE_MM (or that has too little data) is left out of the annual mean —
+# as in 2025, when Haifa was out of service and Acre had too little reliable data.
+BASELINE_STATION = os.getenv("REPORT_BASELINE_STATION", "Yafo")
+EXPECTED_OFFSET_MM = {k.strip(): float(v) for k, v in (
+    pair.split(":") for pair in os.getenv("REPORT_EXPECTED_OFFSETS_MM",
+                                          "Yafo:0,Ashdod:-4,Ashkelon:-4,Haifa:4,Acre:8").split(",") if ":" in pair)}
+OFFSET_TOLERANCE_MM = float(os.getenv("REPORT_OFFSET_TOLERANCE_MM", "20"))
+# A station contributes to the months it has data, so it needs fewer months than a single-station annual mean;
+# the network year itself still needs MIN_MONTHS_PER_YEAR months.
+MIN_MONTHS_TO_PARTICIPATE = int(os.getenv("REPORT_MIN_STATION_MONTHS", "6"))
+MIN_OVERLAP_MONTHS = 3
 MIN_DAYS_PER_MONTH = 15   # PSMSL-style validity for a monthly mean used in the annual mean
 MIN_MONTHS_PER_YEAR = 11
 
-os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")   # Lambda: only /tmp is writable
+if os.getenv("AWS_LAMBDA_FUNCTION_NAME"):
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")   # Lambda: only /tmp is writable
 
 
 @dataclass
@@ -368,6 +383,62 @@ def network_annual_mean(monthly: Dict[int, dict], stations: List[str]) -> Option
     return sum(months) / len(months) if len(months) >= MIN_MONTHS_PER_YEAR else None
 
 
+def check_stations(monthly: Dict[int, dict], stations: List[str]):
+    """
+    Which Mediterranean stations go into the annual mean.
+
+    1. Enough data: at least MIN_MONTHS_TO_PARTICIPATE (6) months with a valid monthly mean (≥ 15 days).
+    2. Consistent with the baseline (Yafo): the median over shared valid months of
+       (station − Yafo) must be within OFFSET_TOLERANCE_MM of the expected offset. If the station shares fewer
+       than 3 months with Yafo, it is compared with another station that passed (expected offsets subtract).
+    Returns (included stations, notes explaining every decision).
+    """
+    def months_of(st):
+        return {m: v for m in range(1, 13) if (v := _valid_month_mean(monthly, m, st)) is not None}
+
+    data = {st: months_of(st) for st in stations}
+    enough = [st for st in stations if len(data[st]) >= MIN_MONTHS_TO_PARTICIPATE]
+    notes = [f"{st}: left out — only {len(data[st])} months with ≥ {MIN_DAYS_PER_MONTH} days of data"
+             for st in stations if st not in enough]
+
+    def offset_mm(a, b):
+        shared = sorted(set(data[a]) & set(data[b]))
+        if len(shared) < MIN_OVERLAP_MONTHS:
+            return None, len(shared)
+        diffs = sorted((data[a][m] - data[b][m]) * 1000 for m in shared)
+        mid = len(diffs) // 2
+        return (diffs[mid] if len(diffs) % 2 else (diffs[mid - 1] + diffs[mid]) / 2), len(shared)
+
+    included = []
+    base = BASELINE_STATION if BASELINE_STATION in data and data[BASELINE_STATION] else None
+    # The baseline itself, then the others; a station without enough overlap with the baseline is compared
+    # with a station already accepted.
+    order = sorted(enough, key=lambda st: (st != base,))
+    for st in order:
+        if base is None or st == base:
+            included.append(st)
+            continue
+        refs = [base] + [r for r in included if r != base]
+        for ref in refs:
+            got, n = offset_mm(st, ref)
+            if got is None:
+                continue
+            expected = EXPECTED_OFFSET_MM.get(st, 0.0) - EXPECTED_OFFSET_MM.get(ref, 0.0)
+            ok = abs(got - expected) <= OFFSET_TOLERANCE_MM
+            notes.append(f"{st} vs {ref}: {got:+.0f} mm (expected {expected:+.0f} mm, {n} shared months) — "
+                         + ("included" if ok else f"left out (more than {OFFSET_TOLERANCE_MM:.0f} mm off)"))
+            if ok:
+                included.append(st)
+            break
+        else:
+            notes.append(f"{st}: included without comparison (fewer than {MIN_OVERLAP_MONTHS} months shared "
+                         f"with {BASELINE_STATION} or an accepted station)")
+            included.append(st)
+    if base is None:
+        notes.append(f"{BASELINE_STATION} (baseline) has no valid months — stations not compared")
+    return [st for st in stations if st in included], notes
+
+
 def yearly_report(engine, year: int, history: Optional[Dict[int, float]] = None,
                   reference: Optional[List[str]] = None) -> Report:
     yy = f"{year % 100:02d}"
@@ -413,8 +484,10 @@ def yearly_report(engine, year: int, history: Optional[Dict[int, float]] = None,
     # Long-term chart: the history file (official values) + this year's Mediterranean mean if not in it yet
     reference = reference or REFERENCE_STATIONS
     series = {y: v for y, v in (history if history is not None else read_history()).items() if y <= year}
-    computed = network_annual_mean(monthly, reference)
-    label = ", ".join(reference)
+    included, checks = check_stations(monthly, reference)
+    rep.notes.extend(checks)
+    computed = network_annual_mean(monthly, included) if included else None
+    label = ", ".join(included) or "no station passed the checks"
     if computed is None:
         rep.notes.append(f"Annual mean {year} not computed: fewer than {MIN_MONTHS_PER_YEAR} months with a valid "
                          f"monthly mean (≥ {MIN_DAYS_PER_MONTH} days) at {label}")
@@ -428,7 +501,7 @@ def yearly_report(engine, year: int, history: Optional[Dict[int, float]] = None,
     if series:
         first = min(series)
         rep.files[f"{root}/מפלס הים התיכון בישראל {first}-{year}.png"] = _plot_long_term(
-            series, f"{first}-{year}", ", ".join(HEBREW_NAMES.get(st, st) for st in reference))
+            series, f"{first}-{year}", ", ".join(HEBREW_NAMES.get(st, st) for st in (included or reference)))
         if len(series) == 1:
             rep.notes.append("Long-term chart has only this year — add past annual means to "
                              "backend/reports/annual_mean_history.csv")
