@@ -302,7 +302,14 @@ def stations_map(end_date: Optional[str] = Query(None, max_length=40), user: Ide
 @app.get("/api/sea-forecast")
 @app.get("/sea-forecast", include_in_schema=False)
 def sea_forecast(user: Identity = Depends(current_user)):
-    return JSONResponse(build_forecast_payload(), headers={"Cache-Control": "private, max-age=1800"})
+    try:
+        payload = build_forecast_payload()
+    except Exception:
+        logger.exception("Sea forecast failed")
+        return JSONResponse({"error": "IMS sea forecast unavailable", "forecast": [], "locations": []},
+                            status_code=503)
+    # Short cache: IMS updates the file daily and stale copies are flagged in the metadata.
+    return JSONResponse(payload, headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/ims-warnings")

@@ -19,6 +19,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Use the OS certificate store for outbound HTTPS (IMS, GovMap). Needed on the on-prem
+# Windows server, where the network inspects HTTPS with its own root certificate.
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 BACKEND_ROOT = Path(__file__).resolve().parent
 load_dotenv(BACKEND_ROOT / ".env")
 sys.path.insert(0, str(BACKEND_ROOT))
