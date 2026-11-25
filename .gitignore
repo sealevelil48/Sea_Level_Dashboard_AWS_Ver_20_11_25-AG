@@ -214,3 +214,10 @@ infra/params.*.env
 !infra/params.example.env
 !.env.example
 !backend/.env.example
+
+# Local tool settings and stray env copies
+.claude/settings.local.json
+**/Env.txt
+infra/params.*.env
+!infra/params.example.env
+*.log

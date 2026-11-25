@@ -1,16 +1,16 @@
 name: Deploy
 
 # Manual deploys only. Uses GitHub OIDC → an IAM role in the company account (no stored AWS keys).
-# Repository settings → Environments → dev / prod:
+# Repository settings → Environments → dev / stg / prod:
 #   variables: AWS_DEPLOY_ROLE_ARN, and every key from infra/params.example.env
-#   prod: add required reviewers.
+#   stg and prod: add required reviewers; prod: allow deployments from the main branch only.
 on:
   workflow_dispatch:
     inputs:
       env:
         description: Environment
         type: choice
-        options: [dev, prod]
+        options: [dev, stg, prod]
         default: dev
 
 permissions:
@@ -51,5 +51,9 @@ jobs:
           ADMIN_EMAILS=${{ vars.ADMIN_EMAILS }}
           ALLOWED_USERS=${{ vars.ALLOWED_USERS }}
           ALARM_EMAIL=${{ vars.ALARM_EMAIL }}
+          SYNC_SCHEDULE='${{ vars.SYNC_SCHEDULE || 'rate(1 minute)' }}'
+          SYNC_START_DATE=${{ vars.SYNC_START_DATE || '2020-01-01' }}
+          AURORA_MIN_ACU=${{ vars.AURORA_MIN_ACU || '0.5' }}
+          AURORA_MAX_ACU=${{ vars.AURORA_MAX_ACU || '4' }}
           PARAMS
       - run: scripts/deploy.sh ${{ inputs.env }} /tmp/params.env

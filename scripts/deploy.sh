@@ -10,7 +10,8 @@
 # =============================================================================
 set -euo pipefail
 
-ENV="${1:?usage: deploy.sh <dev|prod> <params-file>}"
+ENV="${1:?usage: deploy.sh <dev|stg|prod> <params-file>}"
+case "$ENV" in dev|stg|prod) ;; *) echo "env must be dev, stg or prod"; exit 2 ;; esac
 PARAMS_FILE="${2:?params file, see infra/params.example.env}"
 # shellcheck disable=SC1090
 source "$PARAMS_FILE"
@@ -24,6 +25,9 @@ TAG="$(git -C "$ROOT" rev-parse --short HEAD)$(git -C "$ROOT" diff --quiet || ec
 IMAGE="${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/${REPO}:${TAG}"
 
 echo "▶ ${STACK} in ${REGION} (account ${ACCOUNT}), image ${TAG}"
+if [ "$ENV" = "prod" ] && [[ "$TAG" == *-dirty ]]; then
+  echo "✖ refusing to deploy uncommitted changes to prod"; exit 1
+fi
 
 # --- 1. Backend image --------------------------------------------------------
 aws ecr describe-repositories --repository-names "$REPO" --region "$REGION" >/dev/null 2>&1 || \
@@ -57,7 +61,11 @@ sam deploy --template-file "$ROOT/infra/template.yaml" --stack-name "$STACK" --r
     OnPremCidr="$ONPREM_CIDR" OnPremSecretArn="$ONPREM_SECRET_ARN" \
     GoogleClientId="$GOOGLE_CLIENT_ID" GoogleClientSecretName="$GOOGLE_CLIENT_SECRET_NAME" \
     CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" AdminEmails="$ADMIN_EMAILS" AllowedUsers="$ALLOWED_USERS" \
-    AlarmEmail="$ALARM_EMAIL" OriginVerifyToken="$ORIGIN_TOKEN" CloudFrontWebAclArn="$CF_WAF_ARN"
+    AlarmEmail="$ALARM_EMAIL" OriginVerifyToken="$ORIGIN_TOKEN" CloudFrontWebAclArn="$CF_WAF_ARN" \
+    SyncSchedule="${SYNC_SCHEDULE:-rate(1 minute)}" SyncStartDate="${SYNC_START_DATE:-2020-01-01}" \
+    AuroraMinACU="${AURORA_MIN_ACU:-0.5}" AuroraMaxACU="${AURORA_MAX_ACU:-4}" \
+    ExtraCallbackUrls="${EXTRA_CALLBACK_URLS:-http://localhost:30887/auth/callback}" \
+    ExtraLogoutUrls="${EXTRA_LOGOUT_URLS:-http://localhost:30887/}"
 
 out() { aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
           --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }

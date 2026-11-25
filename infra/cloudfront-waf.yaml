@@ -7,7 +7,7 @@ Description: >
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod]
+    AllowedValues: [dev, stg, prod]
   RateLimitPer5Min:
     Type: Number
     Default: 3000

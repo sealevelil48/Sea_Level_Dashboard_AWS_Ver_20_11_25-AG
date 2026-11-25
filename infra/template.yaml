@@ -8,8 +8,9 @@ Description: >
 Parameters:
   Env:
     Type: String
-    AllowedValues: [dev, prod]
+    AllowedValues: [dev, stg, prod]
     Default: dev
+    Description: dev = development, stg = staging (prod-like, pre-release checks), prod = production
   ImageUri:
     Type: String
     Description: ECR image URI for the backend (built from backend/Dockerfile.lambda)
@@ -71,6 +72,14 @@ Parameters:
   DBName:
     Type: String
     Default: sealevel
+  SyncSchedule:
+    Type: String
+    Default: rate(1 minute)
+    Description: How often to pull from on-prem. prod rate(1 minute) (architect); dev/stg rate(5 minutes) to spare the on-prem server
+  SyncStartDate:
+    Type: String
+    Default: '2020-01-01'
+    Description: First date copied on the initial catch-up (dev/stg can start later, e.g. 2025-01-01)
 
 Conditions:
   IsProd: !Equals [!Ref Env, prod]
@@ -486,7 +495,7 @@ Resources:
   SyncFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Description: On-prem PostgreSQL → Aurora, every minute
+      Description: On-prem PostgreSQL → Aurora on a schedule (prod every minute)
       PackageType: Image
       ImageUri: !Ref ImageUri
       ImageConfig: { Command: [lambdas.sync.main.handler] }
@@ -498,13 +507,14 @@ Resources:
         Variables:
           DB_SECRET_ARN: !Ref SyncSecret
           ONPREM_SECRET_ARN: !Ref OnPremSecretArn
+          SYNC_START_DATE: !Ref SyncStartDate
       Policies:
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref SyncSecret }
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref OnPremSecretArn }
       Events:
         EveryMinute:
           Type: Schedule
-          Properties: { Schedule: rate(1 minute), Enabled: true }
+          Properties: { Schedule: !Ref SyncSchedule, Enabled: true }
 
   MigrateFunction:
     Type: AWS::Serverless::Function
