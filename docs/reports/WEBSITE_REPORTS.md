@@ -37,21 +37,19 @@ Avg. These can be changed with `REPORT_MISSING_*`.
   - **History:** `backend/reports/annual_mean_history.csv` holds the official annual means for 1958–2025, taken
     from Ben's *מפלס ממוצע 1958-2024.xlsx*. When the history file has a value for a year, the chart uses that
     published value. The report's notes also show the value computed from the data, for comparison.
-  - **New year (2026 onward):** the year's value is computed as the **average of the Mediterranean stations**
-    (Acre, Haifa, Yafo, Ashdod, Ashkelon; **Eilat is excluded** because it is on the Red Sea). Each month is the
-    mean of the stations that have a valid monthly mean (≥ 15 days of data), and the year is the mean of those
-    months (at least 11 are needed). A station that is out of service for a few months therefore doesn't drop
-    the year.
+  - **New year (2026 onward):** Mediterranean stations only (Eilat is Red Sea). Each station is first checked
+    against the baseline **Yafo**: the median monthly difference must be within 20 mm of the expected offset
+    (Ashdod and Ashkelon −4 mm, typically −2; Haifa +4 mm; Acre +8 mm). A station also needs at least 6 months
+    with ≥ 15 days of data. Stations that fail are left out, and the report's notes say why. Then each
+    month = mean of the included stations, and the year = mean of the months (≥ 11 needed).
+    This reproduces 2025 from *sealevel2025(12)*: Haifa (+45 mm, out of service) and Acre (+73 mm) are left out;
+    Yafo, Ashdod and Ashkelon give **0.149 m** (official 0.150).
+    The offsets, tolerance and baseline can be set with `REPORT_EXPECTED_OFFSETS_MM`,
+    `REPORT_OFFSET_TOLERANCE_MM` and `REPORT_BASELINE_STATION`.
   - **Drawn like the slide:** smoothed line with points, linear trend with its equation, a 6th-order
     polynomial trend and a 19-year trailing moving average (the two grey dotted lines on the current slide;
     both were checked against it), the MAPI logos, and 1920×1080.
   - **Once a year is final,** add its official value to the history file.
-
-> **Check (2025):** the official 2025 value is **0.150 m**. In *sealevel202512.xlsx*, the plain average of the
-> five Mediterranean stations is **0.168 m** (average of the station means) or **0.174 m** (average of the monthly
-> network means). Yafo + Ashdod + Ashkelon alone gives about **0.149 m**. If the official value excludes
-> stations or applies a correction (for example Haifa's calibration issues noted in the sheet), set
-> `REPORT_REFERENCE_STATIONS` accordingly before the 2026 report.
 
 ### Choices agreed with Ben (25.11.2026)
 

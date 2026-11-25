@@ -11,5 +11,6 @@
 | Calibration Phase 3 (relative gap, drift detection) | [calibration/PHASE3_PLAN.md](calibration/PHASE3_PLAN.md) |
 | Code reviews | [review/PRE_AWS_REVIEW_2026-11-08.md](review/PRE_AWS_REVIEW_2026-11-08.md), [review/REVIEW_2026-11-25.md](review/REVIEW_2026-11-25.md) |
 | Database tuning (SeaTides, Southern Baseline) | [database/](database/) |
+| **Run this version on the on-prem server now** | [guides/ONPREM_UPGRADE.md](guides/ONPREM_UPGRADE.md) |
 | User manual, local setup, testing, API | [guides/](guides/) |
 | Old click-ops deployment notes (Hebrew, superseded by `aws/`) | [archive/deployment-legacy/](archive/deployment-legacy/) |

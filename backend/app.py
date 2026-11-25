@@ -30,7 +30,7 @@ if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
 from shared.auth import (  # noqa: E402
-    AuthError, Identity, auth_mode, identity_from_claims, identity_from_event, verify_bearer_token,
+    AuthError, Identity, auth_mode, identity_from_claims, identity_from_event, local_identity, verify_bearer_token,
 )
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
@@ -119,7 +119,9 @@ async def unhandled(request: Request, exc: Exception):
 
 def current_user(request: Request) -> Identity:
     if auth_mode() == "disabled":
-        return identity_from_event({})
+        ident = local_identity(request.client.host if request.client else None, request.headers)
+        request.state.identity = ident
+        return ident
     aws_event = request.scope.get("aws.event")
     if aws_event is not None:
         # API Gateway's Cognito authorizer already validated the token.

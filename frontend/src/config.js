@@ -5,12 +5,22 @@
  *   - unset  → local dev default (http://127.0.0.1:30886)
  *   - ""     → same origin (AWS: CloudFront routes /api/* to API Gateway)
  *   - URL    → explicit backend
+ *   - "auto" → same host the page was opened from, port REACT_APP_API_PORT (default 30886) — on-prem:
+ *              works for every address the server is reached by (public IP, LAN name, localhost)
  * Never put secrets in REACT_APP_* variables — they are readable in the bundle.
  */
 const env = process.env;
+const resolveApiUrl = () => {
+  const v = env.REACT_APP_API_URL;
+  if (v === undefined) return 'http://127.0.0.1:30886';
+  if (v === 'auto') {
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:${env.REACT_APP_API_PORT || '30886'}`;
+  }
+  return v.replace(/\/$/, '');
+};
 
-export const API_BASE_URL =
-  env.REACT_APP_API_URL !== undefined ? env.REACT_APP_API_URL.replace(/\/$/, '') : 'http://127.0.0.1:30886';
+export const API_BASE_URL = resolveApiUrl();
 
 export const AUTH = {
   // "cognito" (default) or "disabled" (local development only)

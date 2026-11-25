@@ -162,3 +162,25 @@ def test_tides_route(client, keys, database):
     assert {"events", "daily", "method"} <= set(body)
     assert client.get("/api/tides", params={"stations": "Haifa", "start_date": "2026-01-01", "end_date": "2026-10-09"},
                       headers=H(token(keys))).status_code == 400   # > 92 days
+
+
+def test_on_prem_console_admin_only_from_the_server_itself(monkeypatch):
+    """AUTH_MODE=disabled: viewers everywhere; admin only for a browser on the server (loopback, no proxy)."""
+    from shared.auth import local_identity, identity_from_event
+    monkeypatch.setenv("AUTH_MODE", "disabled")
+    monkeypatch.delenv("ALLOW_INSECURE_LOCAL_CALIBRATION", raising=False)
+    monkeypatch.setenv("LOCAL_ADMIN_ON_SERVER", "true")
+    assert local_identity("127.0.0.1", {}).is_admin is True
+    assert local_identity("::1", {}).is_admin is True
+    assert local_identity("10.0.0.7", {}).is_admin is False                       # any other PC
+    assert local_identity("127.0.0.1", {"x-forwarded-for": "1.2.3.4"}).is_admin is False   # via a proxy
+    console = local_identity("127.0.0.1", {})
+    event = {"requestContext": {"authorizer": {"claims": {"sub": console.sub, "email": console.email,
+                                                          "email_verified": "true"}}}}
+    assert identity_from_event(event).is_admin is True                            # calibration handlers agree
+    monkeypatch.setenv("LOCAL_ADMIN_ON_SERVER", "false")
+    assert local_identity("127.0.0.1", {}).is_admin is False
+    monkeypatch.setenv("LOCAL_ADMIN_ON_SERVER", "true")
+    monkeypatch.setenv("AUTH_MODE", "cognito")
+    ident = local_identity("127.0.0.1", {})
+    assert ident is None or ident.is_admin is False                               # never with real sign-in

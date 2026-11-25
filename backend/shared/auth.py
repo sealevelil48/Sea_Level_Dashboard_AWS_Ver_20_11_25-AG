@@ -57,6 +57,8 @@ class Identity:
             return False
         if self.sub == "local-dev":   # AUTH_MODE=disabled — admin only with the explicit dev-only flag
             return auth_mode() == "disabled" and _env("ALLOW_INSECURE_LOCAL_CALIBRATION").lower() == "true"
+        if self.sub == SERVER_CONSOLE_SUB:   # on-prem, browser on the server itself (see local_identity)
+            return auth_mode() == "disabled" and _env("LOCAL_ADMIN_ON_SERVER").lower() == "true"
         # Admin = the addresses in ADMIN_EMAILS (benp@mapi.gov.il). A Cognito group grants admin only if
         # ADMIN_GROUP is set explicitly — off by default, so nobody becomes admin from the AWS console.
         group = _env("ADMIN_GROUP")
@@ -90,9 +92,31 @@ def identity_from_claims(claims: Optional[Dict[str, Any]]) -> Optional[Identity]
     )
 
 
+SERVER_CONSOLE_SUB = "server-console"
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+_PROXY_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
+
+
+def local_identity(client_host: Optional[str], headers) -> "Identity":
+    """
+    AUTH_MODE=disabled (on-prem until Google sign-in is set up): everyone is a read-only viewer, except a
+    browser running ON the server itself (loopback address, no proxy headers) when LOCAL_ADMIN_ON_SERVER=true.
+    That lets Ben calibrate and make reports from the server console (RDP) while nobody else can.
+    """
+    on_console = (client_host in _LOOPBACK
+                  and not any(h in headers for h in _PROXY_HEADERS)
+                  and _env("LOCAL_ADMIN_ON_SERVER").lower() == "true")
+    if on_console:
+        return Identity(sub=SERVER_CONSOLE_SUB, email="server-console@localhost", email_verified=True)
+    return identity_from_event({})
+
+
 def identity_from_event(event: Dict[str, Any]) -> Optional[Identity]:
     """Read the caller identity placed by API Gateway (or by the local FastAPI adapter)."""
     if auth_mode() == "disabled":
+        claims = (((event or {}).get("requestContext") or {}).get("authorizer") or {}).get("claims")
+        if claims and claims.get("sub") == SERVER_CONSOLE_SUB:   # set by app.py from local_identity()
+            return identity_from_claims(claims)
         return Identity(sub="local-dev", email="local-dev@localhost", email_verified=True,
                         groups=["admin"] if _env("ALLOW_INSECURE_LOCAL_CALIBRATION").lower() == "true" else [])
     ctx = (event or {}).get("requestContext") or {}
