@@ -32,25 +32,35 @@ Avg. These can be changed with `REPORT_MISSING_*`.
 
 - All values come from the **validated series** (`Monitors_effective`): calibration corrections are applied
   and deleted samples are left out.
-- Hourly, daily and monthly means are the mean of every sample in the hour, day or month. This matches today's
-  Monthly Avg file whenever a month has no gaps.
-- The **annual mean** on the long-term chart is the mean of the valid monthly means of the reference
-  station (`REPORT_REFERENCE_STATIONS`, default **Ashdod**). A month counts as valid with at least 15 days
-  of data, and the year needs at least 11 valid months. Ashdod is the default because its 2025 mean
-  (0.145 m) matches the 2025 point on the current slide (about 0.147 m). **Ben: please confirm which
-  station or method the slide uses.**
-- The chart's earlier years come from `backend/reports/annual_mean_history.csv` (`Year,Mean_m`).
-  **Fill it once** with 1958–2024 from the Excel behind the slide. Until then the chart shows only the
-  years in that file plus the new year.
+- Hourly, daily and monthly means are the mean of every sample in the hour, day or month.
+- **Long-term chart** (*מפלס הים התיכון בישראל*):
+  - **History:** `backend/reports/annual_mean_history.csv` holds the official annual means for 1958–2025, taken
+    from Ben's *מפלס ממוצע 1958-2024.xlsx*. When the history file has a value for a year, the chart uses that
+    published value. The report's notes also show the value computed from the data, for comparison.
+  - **New year (2026 onward):** the year's value is computed as the **average of the Mediterranean stations**
+    (Acre, Haifa, Yafo, Ashdod, Ashkelon; **Eilat is excluded** because it is on the Red Sea). Each month is the
+    mean of the stations that have a valid monthly mean (≥ 15 days of data), and the year is the mean of those
+    months (at least 11 are needed). A station that is out of service for a few months therefore doesn't drop
+    the year.
+  - **Drawn like the slide:** smoothed line with points, linear trend with its equation, a 6th-order
+    polynomial trend and a 19-year trailing moving average (the two grey dotted lines on the current slide;
+    both were checked against it), the MAPI logos, and 1920×1080.
+  - **Once a year is final,** add its official value to the history file.
 
-### Differences from the files uploaded today (deliberate, easy to change)
+> **Check (2025):** the official 2025 value is **0.150 m**. In *sealevel202512.xlsx*, the plain average of the
+> five Mediterranean stations is **0.168 m** (average of the station means) or **0.174 m** (average of the monthly
+> network means). Yafo + Ashdod + Ashkelon alone gives about **0.149 m**. If the official value excludes
+> stations or applies a correction (for example Haifa's calibration issues noted in the sheet), set
+> `REPORT_REFERENCE_STATIONS` accordingly before the 2026 report.
 
-| Today | Now | Why |
-|---|---|---|
-| `Daily Avg 25.csv` contained **2024** data | the report's year | It looked like a copy mistake |
-| File date in monthly names, e.g. `_2025-01-25` | last day of the month (`_2025-01-31`) | Same name every time a report is made |
-| Long-term chart is a slide with the MAPI logos (JPG) | chart only (PNG), no logos | Add the logos when the chart goes into the slide |
-| Timestamps end in `Z` although they are Israel local time | kept, for compatibility | Set `REPORT_TS_SUFFIX=` to drop the misleading `Z` |
+### Choices agreed with Ben (25.11.2026)
+
+| Item | Now |
+|---|---|
+| Monthly file names | last day of the month, e.g. `sea_level_data_Haifa_2025-01-31.xlsx` |
+| Timestamps in the monthly xlsx | Israel local time, **no `Z`**, e.g. `2025-01-01T00:00:00` |
+| `Daily Avg <YY>.csv` | the report's year (the 2024 data in the old file was a mistake) |
+| Long-term chart | the slide's layout and logos, PNG |
 
 ## How reports are made
 

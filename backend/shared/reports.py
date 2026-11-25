@@ -37,14 +37,19 @@ logger = logging.getLogger(__name__)
 
 # Column order of the website's combined CSV (north → south, Eilat last)
 STATIONS = ["Acre", "Haifa", "Yafo", "Ashkelon", "Ashdod", "Eilat"]
+HEBREW_NAMES = {"Acre": "עכו", "Haifa": "חיפה", "Yafo": "יפו", "Ashdod": "אשדוד", "Ashkelon": "אשקלון", "Eilat": "אילת"}
 HISTORY_CSV = Path(__file__).resolve().parents[1] / "reports" / "annual_mean_history.csv"
 
-# Existing files label local time with a trailing "Z"; kept for compatibility (REPORT_TS_SUFFIX="" to drop it).
-TS_SUFFIX = os.getenv("REPORT_TS_SUFFIX", "Z")
+# Timestamps are Israel local time, so no "Z" (UTC) suffix (the old uploads had a misleading "Z").
+TS_SUFFIX = os.getenv("REPORT_TS_SUFFIX", "")
 MISSING_XLSX = os.getenv("REPORT_MISSING_XLSX", "NULL")      # as in <Station><YY>.xlsx today
 MISSING_COMBINED = os.getenv("REPORT_MISSING_COMBINED", "NULL")
 MISSING_MONTHLY = os.getenv("REPORT_MISSING_MONTHLY", "NaN")
-REFERENCE_STATIONS = [s.strip() for s in os.getenv("REPORT_REFERENCE_STATIONS", "Ashdod").split(",") if s.strip()]
+# The long-term chart is the Mediterranean coast: every station except Eilat (Red Sea).
+MEDITERRANEAN = ["Acre", "Haifa", "Yafo", "Ashdod", "Ashkelon"]
+REFERENCE_STATIONS = [s.strip() for s in os.getenv("REPORT_REFERENCE_STATIONS", ",".join(MEDITERRANEAN)).split(",")
+                      if s.strip()]
+ASSETS = Path(__file__).resolve().parents[1] / "reports" / "assets"
 MIN_DAYS_PER_MONTH = 15   # PSMSL-style validity for a monthly mean used in the annual mean
 MIN_MONTHS_PER_YEAR = 11
 
@@ -191,39 +196,102 @@ def _rtl(text: str) -> str:
         return text
 
 
+def _smooth(xs, ys, per=12):
+    """Catmull-Rom curve through the points — like Excel's "smoothed line"."""
+    import numpy as np
+    x, y = np.asarray(xs, float), np.asarray(ys, float)
+    if len(x) < 3:
+        return x, y
+    px = np.r_[2 * x[0] - x[1], x, 2 * x[-1] - x[-2]]
+    py = np.r_[2 * y[0] - y[1], y, 2 * y[-1] - y[-2]]
+    t = np.linspace(0, 1, per, endpoint=False)
+    ox, oy = [], []
+    for i in range(1, len(px) - 2):
+        for arr, out in ((px, ox), (py, oy)):
+            p0, p1, p2, p3 = arr[i - 1], arr[i], arr[i + 1], arr[i + 2]
+            out.extend(0.5 * (2 * p1 + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t ** 2
+                              + (-p0 + 3 * p1 - 3 * p2 + p3) * t ** 3))
+    ox.append(x[-1])
+    oy.append(y[-1])
+    return np.array(ox), np.array(oy)
+
+
 def _plot_long_term(series: Dict[int, float], title_years: str, reference: str) -> bytes:
-    """Annual mean sea level with a linear trend and a 19-year (tidal epoch) moving average."""
+    """
+    The "מפלס הים התיכון בישראל" slide (1920×1080): annual means (smoothed line + points), linear trend with
+    its equation, 6th-order polynomial trend and 19-year moving average (trailing, as Excel draws them),
+    MAPI logos. Same construction as the existing slide.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import matplotlib.ticker  # noqa: F401
     import numpy as np
-    years = sorted(series)
-    vals = [series[y] for y in years]
-    fig, ax = plt.subplots(figsize=(19.2, 10.8), dpi=100)
-    ax.plot(years, vals, "-o", color="#2f6aa8", linewidth=2.2, markersize=5, label=_rtl("ממוצע שנתי"))
+    years = np.array(sorted(series), dtype=float)
+    vals = np.array([series[int(y)] for y in years])
+
+    fig = plt.figure(figsize=(19.2, 10.8), dpi=100)
+    fig.patches.extend([
+        plt.Rectangle((0, 0), 0.5, 1, transform=fig.transFigure, color="#0095d9", zorder=-3),
+        plt.Rectangle((0.5, 0), 0.5, 1, transform=fig.transFigure, color="#23b9d2", zorder=-3),
+        plt.Rectangle((0.02, 0.03), 0.96, 0.94, transform=fig.transFigure, color="white", zorder=-2),
+    ])
+    ax = fig.add_axes((0.05, 0.065, 0.875, 0.805))
+    first = int(years[0]) if len(years) else 1958
+    last = int(years[-1]) if len(years) else first
+    x0, x1 = (first // 5) * 5 - (5 if first % 5 == 0 else 0), last
+    ax.set_xlim(x0, x1)
+    lo = min(-0.05, np.floor(vals.min() / 0.05) * 0.05) if len(vals) else -0.05
+    hi = max(0.2, np.ceil(vals.max() / 0.05) * 0.05) if len(vals) else 0.2
+    ax.set_ylim(lo, hi)
+    ax.set_xticks(range(x0, x1 + 1, 5))
+    ax.set_xticks(range(x0, x1 + 1), minor=True)
+    ax.set_yticks(np.arange(lo, hi + 1e-9, 0.05))
+    ax.yaxis.set_major_formatter(matplotlib.ticker.FormatStrFormatter("%.3f"))
+    ax.yaxis.tick_right()
+    ax.grid(True, which="both", axis="x", color="#c8c8c8", linewidth=0.8)
+    ax.grid(True, which="major", axis="y", color="#c8c8c8", linewidth=0.8)
+    ax.tick_params(axis="x", which="major", labelsize=11, length=0, pad=10)
+    ax.tick_params(axis="x", which="minor", length=0)
+    ax.tick_params(axis="y", labelsize=11, length=0)
+    for side in ax.spines.values():
+        side.set_color("#bdbdbd")
+    ax.axhline(0, color="#c0581d", linewidth=2.5, zorder=1)
+
+    if len(years) >= 2:
+        sx, sy = _smooth(years, vals)
+        ax.plot(sx, sy, color="#2e6da4", linewidth=2.6, zorder=4)
+    ax.plot(years, vals, "o", color="#2e6da4", markersize=6, zorder=5)
     if len(years) >= 3:
         k, b = np.polyfit(years, vals, 1)
-        ax.plot(years, [k * y + b for y in years], ":", color="#1a8f3a", linewidth=2,
-                # No brackets or signs inside Hebrew labels: the bidi reordering would mirror them wrongly
-                label=_rtl(f"מגמה ליניארית: {'עלייה' if k >= 0 else 'ירידה'} של {abs(k) * 1000:.2f} מ\"מ לשנה"))
+        ax.plot(years, k * years + b, ":", color="#1a8f3a", linewidth=2.2, zorder=3)
+        ax.text(years.mean(), k * years.mean() + b + (hi - lo) * 0.008, f"y = {k:.4f}x {b:+.3f}".replace("+", "+ ").replace("-", "- "),
+                fontsize=12, ha="center", va="bottom", color="#333333", zorder=6)
+    if len(years) >= 8:
+        c = years.mean()
+        poly = np.polyfit(years - c, vals, 6)
+        fine = np.linspace(years[0], years[-1], 400)
+        ax.plot(fine, np.polyval(poly, fine - c), ":", color="#8c8c8c", linewidth=2, zorder=2)
     if len(years) >= 19:
-        ma = np.convolve(vals, np.ones(19) / 19, mode="valid")
-        ax.plot(years[9:-9], ma, ":", color="#888888", linewidth=2, label=_rtl("ממוצע נע 19 שנים"))
-    ax.axhline(0, color="#c0581d", linewidth=2)
-    ax.set_title(_rtl(f"מפלס הים התיכון בישראל {title_years}"), fontsize=26, color="#2f6aa8")
-    ax.set_ylabel(_rtl("גובה מפלס הים במטרים"), fontsize=13, color="#8b1a1a")
-    ax.yaxis.tick_right()
-    ax.yaxis.set_label_position("right")
-    ax.grid(True, axis="x", color="#cccccc")
-    ax.grid(True, axis="y", color="#dddddd")
-    if years:
-        ax.set_xlim(years[0] - 3, years[-1] + 1)
-    ax.legend(loc="upper left", fontsize=11)
-    ax.text(0.995, 0.01, _rtl(f"תחנת ייחוס: {reference}"), transform=ax.transAxes, ha="right",
-            fontsize=10, color="#555555")
-    fig.tight_layout()
+        ma = np.convolve(vals, np.ones(19) / 19, mode="valid")     # trailing: plotted at the window's last year
+        ax.plot(years[18:], ma, ":", color="#8c8c8c", linewidth=2, zorder=2)
+
+    fig.text(0.5, 0.885, _rtl(f"מפלס הים התיכון בישראל {title_years}"), ha="center", va="center",
+             fontsize=30, color="#2e6da4")
+    fig.text(0.965, 0.47, _rtl("גובה מפלס הים במטרים"), rotation=90, ha="center", va="center",
+             fontsize=13, color="#8b1a1a")
+    ax.text(x1 - 0.6, 0, _rtl("שנים"), ha="right", va="bottom", fontsize=12, color="#8b1a1a")
+    ax.text(x0 + 0.5, lo + (hi - lo) * 0.012, _rtl(f"ממוצע תחנות הים התיכון: {reference}"), ha="left",
+            va="bottom", fontsize=10, color="#666666", zorder=6)
+    for name, box in (("logo_survey_of_israel.png", (0.379, 0.905, 0.242, 0.052)),
+                      ("logo_ministry.png", (0.023, 0.887, 0.074, 0.072))):
+        path = ASSETS / name
+        if path.exists():
+            lax = fig.add_axes(box)
+            lax.imshow(plt.imread(str(path)))
+            lax.axis("off")
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor="white")
+    fig.savefig(buf, format="png")
     plt.close(fig)
     return buf.getvalue()
 
@@ -269,20 +337,35 @@ def read_history(path: Optional[Path] = None) -> Dict[int, float]:
     for row in csv.reader(line for line in p.read_text(encoding="utf-8-sig").splitlines()
                           if line.strip() and not line.startswith("#")):
         try:
-            out[int(row[0])] = float(row[1])
+            out[int(row[0])] = float(row[1])   # Year, Mean_m (further columns are ignored)
         except (ValueError, IndexError):
             continue   # header or a malformed line
     return out
 
 
+def _valid_month_mean(monthly: Dict[int, dict], month: int, station: str) -> Optional[float]:
+    acc = monthly.get(month, {}).get(station)
+    return acc["mean"] if acc and acc["days"] >= MIN_DAYS_PER_MONTH else None
+
+
 def annual_mean(monthly: Dict[int, dict], station: str) -> Optional[float]:
-    """Mean of valid monthly means (≥ 15 days of data) — None if fewer than 11 valid months."""
-    valid = []
-    for mo in monthly.values():
-        s = mo.get(station)
-        if s and s["days"] >= MIN_DAYS_PER_MONTH:
-            valid.append(s["mean"])
+    """One station: mean of valid monthly means (≥ 15 days of data) — None if fewer than 11 valid months."""
+    valid = [v for v in (_valid_month_mean(monthly, m, station) for m in range(1, 13)) if v is not None]
     return sum(valid) / len(valid) if len(valid) >= MIN_MONTHS_PER_YEAR else None
+
+
+def network_annual_mean(monthly: Dict[int, dict], stations: List[str]) -> Optional[float]:
+    """
+    Several stations (the Mediterranean coast): each month = mean of the stations with a valid monthly mean
+    that month; the year = mean of those monthly values, if at least 11 months have one. A station out of
+    service for some months therefore does not remove the whole year.
+    """
+    months = []
+    for m in range(1, 13):
+        vals = [v for v in (_valid_month_mean(monthly, m, st) for st in stations) if v is not None]
+        if vals:
+            months.append(sum(vals) / len(vals))
+    return sum(months) / len(months) if len(months) >= MIN_MONTHS_PER_YEAR else None
 
 
 def yearly_report(engine, year: int, history: Optional[Dict[int, float]] = None,
@@ -327,20 +410,25 @@ def yearly_report(engine, year: int, history: Optional[Dict[int, float]] = None,
         ([st, year, m, monthly[m][st]["mean"] if st in monthly[m] else None]
          for st in sorted(STATIONS) for m in range(1, 13)), MISSING_MONTHLY)
 
-    # Long-term chart: history file + this year's annual mean of the reference station(s)
+    # Long-term chart: the history file (official values) + this year's Mediterranean mean if not in it yet
     reference = reference or REFERENCE_STATIONS
-    series = dict(history if history is not None else read_history())
-    means = [v for v in (annual_mean(monthly, st) for st in reference) if v is not None]
-    if means:
-        series[year] = sum(means) / len(means)
-        rep.notes.append(f"Annual mean {year} ({'+'.join(reference)}): {series[year]:.4f} m")
+    series = {y: v for y, v in (history if history is not None else read_history()).items() if y <= year}
+    computed = network_annual_mean(monthly, reference)
+    label = ", ".join(reference)
+    if computed is None:
+        rep.notes.append(f"Annual mean {year} not computed: fewer than {MIN_MONTHS_PER_YEAR} months with a valid "
+                         f"monthly mean (≥ {MIN_DAYS_PER_MONTH} days) at {label}")
+    elif year in series:
+        rep.notes.append(f"Annual mean {year}: {series[year]:.3f} m from the history file (official); "
+                         f"computed from the data: {computed:.3f} m ({label})")
     else:
-        rep.notes.append(f"Annual mean {year} not computed: fewer than {MIN_MONTHS_PER_YEAR} valid months "
-                         f"(≥ {MIN_DAYS_PER_MONTH} days) for {'+'.join(reference)}")
+        series[year] = round(computed, 3)
+        rep.notes.append(f"Annual mean {year}: {series[year]:.3f} m computed ({label}) — add it to "
+                         f"backend/reports/annual_mean_history.csv once it is final")
     if series:
         first = min(series)
         rep.files[f"{root}/מפלס הים התיכון בישראל {first}-{year}.png"] = _plot_long_term(
-            series, f"{first}-{year}", "+".join(reference))
+            series, f"{first}-{year}", ", ".join(HEBREW_NAMES.get(st, st) for st in reference))
         if len(series) == 1:
             rep.notes.append("Long-term chart has only this year — add past annual means to "
                              "backend/reports/annual_mean_history.csv")

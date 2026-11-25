@@ -24,7 +24,7 @@ def test_monthly_report_layout(engine):
     ws = load_workbook(io.BytesIO(rep.files["10/Haifa/sea_level_data_Haifa_2026-10-31.xlsx"])).active
     assert ws.title == "Historical Data"
     assert [c.value for c in ws[1]] == ["Tab_DateTime", "Station", "Sea_Level", "Temp"]
-    assert ws.cell(2, 1).value == "2026-10-07T00:00:00Z" and ws.cell(2, 2).value == "Haifa"
+    assert ws.cell(2, 1).value == "2026-10-07T00:00:00"   # local time, no "Z" and ws.cell(2, 2).value == "Haifa"
     assert ws.max_row - 1 == 3 * 24 + 1                     # hourly means, 7 Oct 00:00 → 10 Oct 00:00
     assert rep.files["10/Haifa/sea_level_graph_Haifa_2026-10-31.png"][:4] == b"\x89PNG"
     z = zipfile.ZipFile(io.BytesIO(rep.zip_bytes()))
@@ -97,3 +97,21 @@ def test_admin_group_does_not_grant_admin_by_default(monkeypatch):
     assert Identity("s", "benp@mapi.gov.il", True, []).is_admin is True
     monkeypatch.setenv("ADMIN_GROUP", "admin")
     assert Identity("s", "someone@mapi.gov.il", True, ["admin"]).is_admin is True
+
+
+def test_mediterranean_mean_uses_months_with_any_station():
+    """Eilat excluded; a station missing some months does not drop the year."""
+    from shared.reports import MEDITERRANEAN, network_annual_mean
+    assert "Eilat" not in MEDITERRANEAN
+    monthly = {m: {"Ashdod": {"mean": 0.10, "days": 30}, "Haifa": {"mean": 0.20, "days": 30 if m <= 9 else 5},
+                   "Eilat": {"mean": 0.40, "days": 30}} for m in range(1, 13)}
+    # Jan–Sep: (0.10+0.20)/2 = 0.15 ; Oct–Dec: Haifa invalid → 0.10 ; year = (9*0.15 + 3*0.10)/12
+    assert network_annual_mean(monthly, MEDITERRANEAN) == pytest.approx((9 * 0.15 + 3 * 0.10) / 12)
+
+
+def test_history_file_values_win_and_chart_is_made(engine):
+    from shared import reports
+    hist = reports.read_history()
+    assert hist[1958] == pytest.approx(0.055) and hist[2025] == pytest.approx(0.150) and len(hist) == 68
+    rep = reports.yearly_report(engine, 2026, history=hist)
+    assert "שנתי/מפלס הים התיכון בישראל 1958-2026.png" in rep.files
