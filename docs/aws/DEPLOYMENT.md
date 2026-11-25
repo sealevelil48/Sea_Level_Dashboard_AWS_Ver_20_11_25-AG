@@ -3,7 +3,7 @@
 One command deploys everything once the prerequisites below exist:
 
 ```bash
-scripts/deploy.sh dev infra/params.dev.env      # or prod
+scripts/deploy.sh dev infra/params.dev.env      # or stg / prod — see DEPLOYMENT_PLAN.md
 ```
 
 It builds and pushes the backend image, deploys the CloudFront WAF (us-east-1) and the main stack,
@@ -17,7 +17,7 @@ The GitHub Actions **Deploy** workflow runs the same script through OIDC (no sto
 
 | Item | Why |
 |---|---|
-| Account access in **il-central-1** (IAM Identity Center or a deploy role for GitHub OIDC) | Deploy |
+| Account access in **il-central-1** — deploy `infra/github-deploy-role.yaml` (GitHub OIDC role) | Deploy |
 | A **VPC** with **≥2 private subnets** that have a **NAT route** | Lambdas call Secrets Manager, S3 and IMS (forecasts/warnings) |
 | A **route from those subnets to the on-prem PostgreSQL** (Site-to-Site VPN / Direct Connect) and a firewall rule allowing TCP 5432 | 1-minute sync |
 | Lambda **concurrency quota ≥ 100** in the account | Reserved concurrency (API 20, math 10, calibration 2, sync 1) |

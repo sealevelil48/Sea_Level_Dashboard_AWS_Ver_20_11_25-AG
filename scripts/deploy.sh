@@ -65,7 +65,8 @@ sam deploy --template-file "$ROOT/infra/template.yaml" --stack-name "$STACK" --r
     SyncSchedule="${SYNC_SCHEDULE:-rate(1 minute)}" SyncStartDate="${SYNC_START_DATE:-2020-01-01}" \
     AuroraMinACU="${AURORA_MIN_ACU:-0.5}" AuroraMaxACU="${AURORA_MAX_ACU:-4}" \
     ExtraCallbackUrls="${EXTRA_CALLBACK_URLS:-http://localhost:30887/auth/callback}" \
-    ExtraLogoutUrls="${EXTRA_LOGOUT_URLS:-http://localhost:30887/}"
+    ExtraLogoutUrls="${EXTRA_LOGOUT_URLS:-http://localhost:30887/}" \
+    CustomDomain="${CUSTOM_DOMAIN:-}" AcmCertificateArn="${ACM_CERTIFICATE_ARN:-}"
 
 out() { aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
           --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }
@@ -100,10 +101,10 @@ done
 aws cloudfront create-invalidation --distribution-id "$(out DistributionId)" --paths "/index.html" "/" >/dev/null
 
 # --- 5. Smoke test -----------------------------------------------------------
-SITE="$(out SiteUrl)"
+SITE="https://$(out CloudFrontDomainName)"   # works before the custom domain's DNS is in place
 echo "▶ smoke test ${SITE}"
 curl -fsS "${SITE}/api/health" && echo
 code="$(curl -s -o /dev/null -w '%{http_code}' "${SITE}/api/stations")"
 [ "$code" = "401" ] || { echo "✖ /api/stations should require sign-in, got ${code}"; exit 1; }
-echo "✔ deployed: ${SITE}"
+echo "✔ deployed: $(out SiteUrl)  (CloudFront: ${SITE})"
 echo "  Google OAuth redirect URI: $(out GoogleRedirectUri)"

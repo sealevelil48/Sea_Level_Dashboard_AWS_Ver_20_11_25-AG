@@ -55,5 +55,7 @@ jobs:
           SYNC_START_DATE=${{ vars.SYNC_START_DATE || '2020-01-01' }}
           AURORA_MIN_ACU=${{ vars.AURORA_MIN_ACU || '0.5' }}
           AURORA_MAX_ACU=${{ vars.AURORA_MAX_ACU || '4' }}
+          CUSTOM_DOMAIN=${{ vars.CUSTOM_DOMAIN }}
+          ACM_CERTIFICATE_ARN=${{ vars.ACM_CERTIFICATE_ARN }}
           PARAMS
       - run: scripts/deploy.sh ${{ inputs.env }} /tmp/params.env

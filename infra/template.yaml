@@ -72,6 +72,14 @@ Parameters:
   DBName:
     Type: String
     Default: sealevel
+  CustomDomain:
+    Type: String
+    Default: ''
+    Description: Optional site name, e.g. sealevel.mapi.gov.il (stg - sealevel-stg.mapi.gov.il). Needs AcmCertificateArn.
+  AcmCertificateArn:
+    Type: String
+    Default: ''
+    Description: ACM certificate for CustomDomain — must be in us-east-1 (CloudFront)
   SyncSchedule:
     Type: String
     Default: rate(1 minute)
@@ -84,6 +92,7 @@ Parameters:
 Conditions:
   IsProd: !Equals [!Ref Env, prod]
   HasCloudFrontWaf: !Not [!Equals [!Ref CloudFrontWebAclArn, '']]
+  HasCustomDomain: !And [!Not [!Equals [!Ref CustomDomain, '']], !Not [!Equals [!Ref AcmCertificateArn, '']]]
 
 Globals:
   Function:
@@ -280,8 +289,12 @@ Resources:
       AllowedOAuthFlows: [code]
       AllowedOAuthScopes: [openid, email, profile]
       SupportedIdentityProviders: [Google]
-      CallbackURLs: !Split [',', !Join [',', [!Sub 'https://${Distribution.DomainName}/auth/callback', !Join [',', !Ref ExtraCallbackUrls]]]]
-      LogoutURLs: !Split [',', !Join [',', [!Sub 'https://${Distribution.DomainName}/', !Join [',', !Ref ExtraLogoutUrls]]]]
+      CallbackURLs: !Split [',', !Join [',', [!Sub 'https://${Distribution.DomainName}/auth/callback',
+                    !If [HasCustomDomain, !Sub 'https://${CustomDomain}/auth/callback', !Ref AWS::NoValue],
+                    !Join [',', !Ref ExtraCallbackUrls]]]]
+      LogoutURLs: !Split [',', !Join [',', [!Sub 'https://${Distribution.DomainName}/',
+                    !If [HasCustomDomain, !Sub 'https://${CustomDomain}/', !Ref AWS::NoValue],
+                    !Join [',', !Ref ExtraLogoutUrls]]]]
       IdTokenValidity: 60
       AccessTokenValidity: 60
       RefreshTokenValidity: 12
@@ -625,6 +638,11 @@ Resources:
         WebACLId: !If [HasCloudFrontWaf, !Ref CloudFrontWebAclArn, !Ref AWS::NoValue]
         HttpVersion: http2and3
         PriceClass: PriceClass_100
+        Aliases: !If [HasCustomDomain, [!Ref CustomDomain], !Ref AWS::NoValue]
+        ViewerCertificate: !If
+          - HasCustomDomain
+          - { AcmCertificateArn: !Ref AcmCertificateArn, SslSupportMethod: sni-only, MinimumProtocolVersion: TLSv1.2_2021 }
+          - !Ref AWS::NoValue
         DefaultRootObject: index.html
         Origins:
           - Id: frontend
@@ -722,7 +740,10 @@ Resources:
 
 Outputs:
   SiteUrl:
-    Value: !Sub https://${Distribution.DomainName}
+    Value: !If [HasCustomDomain, !Sub 'https://${CustomDomain}', !Sub 'https://${Distribution.DomainName}']
+  CloudFrontDomainName:
+    Description: Point the custom domain's CNAME here
+    Value: !GetAtt Distribution.DomainName
   DistributionId:
     Value: !Ref Distribution
   FrontendBucketName:

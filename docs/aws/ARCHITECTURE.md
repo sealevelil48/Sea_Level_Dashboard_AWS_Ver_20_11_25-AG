@@ -1,7 +1,7 @@
 # AWS Architecture — Sea Level Dashboard
 
 Implements the architecture approved with the company's AWS architect on **12.08.2025**
-(`AWS architecture 12.08.2025.pdf`). Region: **il-central-1 (Tel Aviv)**. Everything is defined in
+(`AWS architecture 12.08.2025.pdf`). Region: **il-central-1 (Tel Aviv)**. Three environments (dev, stg, prod) — see [DEPLOYMENT_PLAN.md](DEPLOYMENT_PLAN.md). Everything is defined in
 [`infra/template.yaml`](../../infra/template.yaml) (+ [`infra/cloudfront-waf.yaml`](../../infra/cloudfront-waf.yaml), us-east-1).
 
 ```mermaid
@@ -45,7 +45,7 @@ flowchart LR
 | Addition | Why |
 |---|---|
 | **Calibration Lambda** (`CalibrationFunction`), admin only | Calibration writes data; it runs with its own DB user that can write *only* the calibration tables. |
-| **Cloud-owned calibration layer** (`Calibration_Offsets`, `Calibration_Audit*`, view `Monitors_effective`) | Aurora is a replica: corrections can't live in the replicated table or the sync would overwrite them. Every change is audited (who/when/what) and reversible. |
+| **Cloud-owned calibration layer** (`Calibration_Offsets` with offset + deleted flag, `Calibration_Audit*`, view `Monitors_effective` = validated series) | Aurora is a replica: corrections can't live in the replicated table or the sync would overwrite them. Every change is audited (who/when/what) and reversible. |
 | **Three least-privilege DB users** (reader / calibrator / sync) | A compromised API cannot modify raw data. |
 | **Migrate function** | Applies SQL migrations and creates DB users on every deploy — no manual DB steps. |
 
