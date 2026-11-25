@@ -52,10 +52,60 @@ const SeaLevelChart = React.forwardRef(({
   activeStations = [], // eslint-disable-line no-unused-vars
   isMobile = false,
   isFullscreen = false, // eslint-disable-line no-unused-vars
-  onPointClick = null
+  onPointClick = null,
+  boxSelect = false,       // calibration editor: drag a box / click to select samples
+  onBoxSelect = null,
+  xRange = null,           // { min, max } (ms) — calibration editor focuses on the correction window
 }, ref) => {
   const chartRef = useRef(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const drag = useRef(null);
+  const [dragRect, setDragRect] = useState(null);
+
+  // --- Calibration editor: box / click selection (pointer events → chart units) ---------------
+  const toChart = (clientX, clientY) => {
+    const chart = chartRef.current;
+    if (!chart?.canvas || !chart.scales?.x || !chart.scales?.y) return null;
+    const r = chart.canvas.getBoundingClientRect();
+    const px = clientX - r.left;
+    const py = clientY - r.top;
+    return { px, py, x: chart.scales.x.getValueForPixel(px), y: chart.scales.y.getValueForPixel(py) };
+  };
+
+  const onPointerDown = (e) => {
+    if (!boxSelect || !onBoxSelect || e.button > 0) return;
+    const p = toChart(e.clientX, e.clientY);
+    if (!p) return;
+    drag.current = { start: p, additive: e.shiftKey, toggle: e.ctrlKey || e.metaKey };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setDragRect({ left: p.px, top: p.py, width: 0, height: 0 });
+  };
+
+  const onPointerMove = (e) => {
+    if (!drag.current) return;
+    const p = toChart(e.clientX, e.clientY);
+    if (!p) return;
+    const s = drag.current.start;
+    setDragRect({ left: Math.min(s.px, p.px), top: Math.min(s.py, p.py),
+                  width: Math.abs(p.px - s.px), height: Math.abs(p.py - s.py) });
+  };
+
+  const onPointerUp = (e) => {
+    const d = drag.current;
+    drag.current = null;
+    setDragRect(null);
+    if (!d) return;
+    const p = toChart(e.clientX, e.clientY) || d.start;
+    const s = d.start;
+    if (Math.abs(p.px - s.px) < 4 && Math.abs(p.py - s.py) < 4) {
+      // A click: nearest sample within ~8 px in time
+      const chart = chartRef.current;
+      const msPerPx = chart ? Math.abs(chart.scales.x.getValueForPixel(s.px + 1) - chart.scales.x.getValueForPixel(s.px)) : 0;
+      onBoxSelect({ click: true, x: s.x, maxDistanceMs: msPerPx * 8 || Infinity, additive: d.additive, toggle: d.toggle });
+      return;
+    }
+    onBoxSelect({ xMin: s.x, xMax: p.x, yMin: s.y, yMax: p.y, additive: d.additive, toggle: d.toggle });
+  };
 
   // Calculate total data points across all datasets
   const totalDataPoints = React.useMemo(() => {
@@ -100,7 +150,6 @@ const SeaLevelChart = React.forwardRef(({
       config = {
         enabled: false
       };
-      console.log(`[SeaLevelChart] Decimation DISABLED - ${totalDataPoints} points (≤10,000 threshold)`);
     }
     // For medium datasets (10,000 - 50,000 points), use high sample count
     else if (totalDataPoints <= 50000) {
@@ -109,7 +158,6 @@ const SeaLevelChart = React.forwardRef(({
         algorithm: 'lttb',
         samples: 5000
       };
-      console.log(`[SeaLevelChart] Decimation enabled with 5000 samples - ${totalDataPoints} points (10K-50K range)`);
     }
     // For large datasets (>50,000 points), use moderate decimation
     else {
@@ -118,7 +166,6 @@ const SeaLevelChart = React.forwardRef(({
         algorithm: 'lttb',
         samples: 8000
       };
-      console.log(`[SeaLevelChart] Decimation enabled with 8000 samples - ${totalDataPoints} points (>50K)`);
     }
     return config;
   }, [totalDataPoints]);
@@ -134,6 +181,7 @@ const SeaLevelChart = React.forwardRef(({
       intersect: false,
     },
     onClick: (event, elements, chart) => {
+      if (boxSelect) return; // the editor handles clicks (point selection)
       try {
         // Prevent event propagation and default behavior
         if (event && event.native) {
@@ -246,6 +294,9 @@ const SeaLevelChart = React.forwardRef(({
                              !label.includes('Anomalies') &&
                              !label.includes('Selected Points') &&
                              !label.includes('Connection Line') &&
+                             !label.includes('Editor') &&
+                             !label.includes('Corrected') &&
+                             !label.includes('Reference') &&
                              !label.includes('CI');
 
         if (isStationData) {
@@ -266,7 +317,7 @@ const SeaLevelChart = React.forwardRef(({
     plugins: {
       zoom: {
         pan: {
-          enabled: true,
+          enabled: !boxSelect, // dragging selects samples in the editor
           mode: 'xy',
           modifierKey: null, // No need to hold a key
         },
@@ -335,8 +386,10 @@ const SeaLevelChart = React.forwardRef(({
     scales: {
       x: {
         type: 'time',
+        ...(xRange ? { min: xRange.min, max: xRange.max } : {}),
         time: {
-          unit: 'day',
+          // Fixed daily ticks for the overview; automatic (hours/minutes) when focused on a window
+          unit: xRange ? undefined : 'day',
           displayFormats: {
             hour: 'HH:mm',
             day: 'MMM dd',
@@ -393,8 +446,23 @@ const SeaLevelChart = React.forwardRef(({
   }
 
   return (
-    <div className="chart-container" style={{ position: 'relative', height: '100%', width: '100%' }}>
+    <div
+      className="chart-container"
+      style={{ position: 'relative', height: '100%', width: '100%',
+               cursor: boxSelect ? 'crosshair' : undefined, touchAction: boxSelect ? 'none' : undefined }}
+      onPointerDown={boxSelect ? onPointerDown : undefined}
+      onPointerMove={boxSelect ? onPointerMove : undefined}
+      onPointerUp={boxSelect ? onPointerUp : undefined}
+      onPointerCancel={boxSelect ? () => { drag.current = null; setDragRect(null); } : undefined}
+      data-testid="sea-level-chart"
+    >
       <Line ref={chartRef} data={data} options={options} />
+      {dragRect && (
+        <div aria-hidden="true" style={{
+          position: 'absolute', left: dragRect.left, top: dragRect.top, width: dragRect.width, height: dragRect.height,
+          border: '1px dashed #ffb454', background: 'rgba(255, 180, 84, 0.12)', pointerEvents: 'none',
+        }} />
+      )}
     </div>
   );
 });

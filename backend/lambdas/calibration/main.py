@@ -544,7 +544,8 @@ def lambda_handler_preview(event, ident):
         df, params = _compute_targets(conn, body, station, start, end, ctype, reference)
         refs = _reference_rows(conn, reference, start, end)
     changed = df["changed"].to_numpy()
-    delta = (df["corrected_value"] - df["current_value"])[changed].dropna()
+    # Change relative to what the operator sees now (deleted samples: their raw value)
+    delta = (df["corrected_value"] - df["current_value"].fillna(df["raw_value"]))[changed].dropna()
     return _ok({
         "station": station,
         "correction_type": ctype,

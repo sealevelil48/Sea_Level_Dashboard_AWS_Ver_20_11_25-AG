@@ -144,6 +144,7 @@ export const useChartJsConfig = ({
   isFullscreen, // eslint-disable-line no-unused-vars
   isMobile, // eslint-disable-line no-unused-vars
   calibrationPreviewData, // optional — calibration correction preview overlay
+  calibrationEditor = null, // optional — { station, samples, selection } (admin editor)
 }) => {
   const chartData = useMemo(() => {
     const datasets = [];
@@ -248,7 +249,9 @@ export const useChartJsConfig = ({
         borderWidth: 2,
         pointRadius: 0, // Hide dots for performance
         pointHoverRadius: 5,
-        tension: 0.4, // Smooth curves (similar to Plotly spline)
+        // Smooth curves for viewing; straight segments while editing (a spline overshoots and
+        // shows levels that were never measured — not acceptable for mm-level QC).
+        tension: filters.calibrationMode ? 0 : 0.4,
         fill: false,
         spanGaps: false, // Show gaps when data is missing
       });
@@ -256,21 +259,6 @@ export const useChartJsConfig = ({
 
     // Add anomalies if enabled
     if (filters.showAnomalies) {
-      console.log('[useChartJsConfig] Anomaly detection enabled');
-      console.log('[useChartJsConfig] Total data points:', graphData.length);
-
-      // Check what anomaly values exist in the data
-      const anomalyValues = [...new Set(graphData.map(point => point.anomaly))];
-      console.log('[useChartJsConfig] Anomaly values in data:', anomalyValues);
-
-      // Count anomalies by value
-      const anomalyCounts = {};
-      graphData.forEach(point => {
-        const val = point.anomaly ?? 'undefined';
-        anomalyCounts[val] = (anomalyCounts[val] || 0) + 1;
-      });
-      console.log('[useChartJsConfig] Anomaly counts:', anomalyCounts);
-
       const anomalyPoints = graphData
         .filter(point => point.anomaly === -1)
         .map(point => ({
@@ -279,10 +267,7 @@ export const useChartJsConfig = ({
           station: point.Station
         }));
 
-      console.log('[useChartJsConfig] Filtered anomaly points:', anomalyPoints.length);
-
       if (anomalyPoints.length > 0) {
-        console.log('[useChartJsConfig] Adding anomaly dataset to chart');
         datasets.push({
           label: 'Anomalies',
           data: anomalyPoints,
@@ -293,24 +278,12 @@ export const useChartJsConfig = ({
           showLine: false,
           pointHoverRadius: 8,
         });
-      } else {
-        console.log('[useChartJsConfig] No anomaly points found with anomaly === -1');
       }
-    } else {
-      console.log('[useChartJsConfig] Anomaly detection disabled');
     }
 
     // Add prediction models
     // Note: API returns predictions in nested structure: { StationName: { kalman: [...], ensemble: [...], etc } }
     if (predictions && filters.predictionModels && Object.keys(predictions).length > 0) {
-      console.log('[useChartJsConfig] Processing predictions:', {
-        stationKeys: Object.keys(predictions),
-        enabledModels: filters.predictionModels,
-        predictionsStructure: Object.entries(predictions).map(([key, val]) => ({
-          station: key,
-          models: typeof val === 'object' ? Object.keys(val) : 'invalid'
-        }))
-      });
 
       // Prediction colors for different models
       const predictionColors = {
@@ -340,7 +313,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding Kalman Filter for ${stationKey}: ${kalmanData.length} points`);
 
           datasets.push({
             label: `${stationKey} - Kalman Filter`,
@@ -406,7 +378,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding Ensemble for ${stationKey}: ${ensembleData.length} points`);
 
           datasets.push({
             label: `${stationKey} - Ensemble`,
@@ -431,7 +402,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding ARIMA for ${stationKey}: ${arimaData.length} points`);
 
           datasets.push({
             label: `${stationKey} - ARIMA`,
@@ -456,7 +426,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding Prophet for ${stationKey}: ${prophetData.length} points`);
 
           datasets.push({
             label: `${stationKey} - Prophet`,
@@ -500,34 +469,47 @@ export const useChartJsConfig = ({
         data: previewRows,
         reference_data: refRows,
         station: calStation,
-        offset_applied: calOffset,
       } = calibrationPreviewData;
 
-      // Corrected line — mint green dashed
-      // CRITICAL FIX: For offset mode, calculate Y-axis on-the-fly using current slider value
-      // For interpolate mode, use pre-calculated backend value
-      const correctedPoints = previewRows
-        .filter(r => {
-          if (filters.calibrationCorrectionType === 'offset') {
-            const base = r.current_value ?? r.raw_value;
-            return base != null && !isNaN(base);
-          } else {
-            return r.corrected_value != null && !isNaN(r.corrected_value);
-          }
-        })
-        .map(r => ({
-          x: new Date(r.Tab_DateTime),
-          y: filters.calibrationCorrectionType === 'offset'
-            // Offsets add on top of corrections already applied (what the chart shows now)
-            ? ((r.current_value ?? r.raw_value) + Number(filters.calibrationOffset || 0))
-            : r.corrected_value  // Use backend value for interpolate mode
-        }));
+      // Corrected line — mint green dashed. Offset mode follows the live input value; other modes
+      // use the backend's values. Deleted samples are gaps (null), so the line never bridges them.
+      const isOffset = filters.calibrationCorrectionType === 'offset';
+      const liveOffset = Number(filters.calibrationOffset || 0);
+      const correctedPoints = previewRows.map(r => {
+        let y;
+        if (isOffset) {
+          const base = r.current_value;
+          y = base == null ? null : base + (r.changed === false ? 0 : liveOffset);
+        } else {
+          y = r.corrected_value;
+        }
+        return { x: new Date(r.Tab_DateTime), y: (y == null || isNaN(y)) ? null : y };
+      });
 
-      if (correctedPoints.length > 0) {
-        // Only show offset in label for offset mode; interpolate mode doesn't use a simple offset
-        const offsetLabel = filters.calibrationCorrectionType === 'offset'
-          ? ` (${Number(filters.calibrationOffset) >= 0 ? '+' : ''}${Number(filters.calibrationOffset || 0)}m)`
-          : filters.calibrationCorrectionType === 'relative' ? ' (Relative to reference)' : ' (Interpolated)';
+      // Samples this preview would delete
+      const toDelete = previewRows
+        .filter(r => r.will_be_deleted && !r.deleted && r.raw_value != null)
+        .map(r => ({ x: new Date(r.Tab_DateTime), y: r.raw_value }));
+      if (toDelete.length > 0) {
+        datasets.push({
+          label: `Will be deleted (${toDelete.length})`,
+          data: toDelete,
+          showLine: false,
+          borderColor: '#ff5c5c',
+          backgroundColor: '#ff5c5c',
+          pointRadius: 4,
+          pointStyle: 'crossRot',
+        });
+      }
+
+      if (correctedPoints.some(p => p.y != null)) {
+        const MODE_LABELS = {
+          relative: ' (Relative to reference)', interpolate: ' (Interpolated)', delete: ' (Points deleted)',
+          restore: ' (Restored to raw)', manual: ' (Typed values)',
+        };
+        const offsetLabel = isOffset
+          ? ` (${liveOffset >= 0 ? '+' : ''}${liveOffset}m)`
+          : (MODE_LABELS[filters.calibrationCorrectionType] || '');
         datasets.push({
           label: `${calStation} Corrected${offsetLabel}`,
           data: correctedPoints,
@@ -540,6 +522,7 @@ export const useChartJsConfig = ({
           // shows levels that were never measured — not acceptable for mm-level corrections.
           tension: 0,
           fill: false,
+          spanGaps: false,
         });
       }
 
@@ -582,6 +565,64 @@ export const useChartJsConfig = ({
             fill: false,
           });
         }
+      }
+    }
+
+    // Calibration editor: full-resolution samples, raw (original) series, deleted and selected points
+    if (filters.calibrationMode && calibrationEditor && Array.isArray(calibrationEditor.samples)
+        && calibrationEditor.samples.length > 0) {
+      const { station: edStation, samples: edSamples, selection: edSelection } = calibrationEditor;
+      const color = getStationColor(edStation);
+      const pts = edSamples.map(r => ({ x: new Date(String(r.Tab_DateTime).replace(' ', 'T')), r }));
+      const hasCorrections = edSamples.some(r => r.deleted || (r.offset && r.offset !== 0));
+      if (hasCorrections) {
+        datasets.push({
+          label: `Editor: ${edStation} raw (original)`,
+          data: pts.map(({ x, r }) => ({ x, y: r.raw_value })),
+          borderColor: 'rgba(148, 163, 184, 0.6)',
+          backgroundColor: 'rgba(148, 163, 184, 0.6)',
+          borderWidth: 1,
+          pointRadius: 0,
+          tension: 0,
+          fill: false,
+        });
+      }
+      datasets.push({
+        label: `Editor: ${edStation} samples`,
+        data: pts.map(({ x, r }) => ({ x, y: r.value })),
+        borderColor: color,
+        backgroundColor: color,
+        borderWidth: 1,
+        pointRadius: edSamples.length <= 3000 ? 1.5 : 0,
+        tension: 0,
+        fill: false,
+        spanGaps: false,
+      });
+      const deleted = pts.filter(({ r }) => r.deleted).map(({ x, r }) => ({ x, y: r.raw_value }));
+      if (deleted.length > 0) {
+        datasets.push({
+          label: `Editor: deleted (${deleted.length})`,
+          data: deleted,
+          showLine: false,
+          borderColor: '#ff5c5c',
+          backgroundColor: '#ff5c5c',
+          pointRadius: 3,
+          pointStyle: 'crossRot',
+        });
+      }
+      if (edSelection && edSelection.size > 0) {
+        const sel = pts.filter(({ r }) => edSelection.has(r.Tab_DateTime))
+          .map(({ x, r }) => ({ x, y: r.value ?? r.raw_value }));
+        datasets.push({
+          label: `Editor: selected (${sel.length})`,
+          data: sel,
+          showLine: false,
+          borderColor: '#ffb454',
+          backgroundColor: 'rgba(255, 180, 84, 0.35)',
+          borderWidth: 1.5,
+          pointRadius: 4,
+          pointStyle: 'circle',
+        });
       }
     }
 
@@ -634,7 +675,7 @@ export const useChartJsConfig = ({
     }
 
     return { datasets };
-  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData, filters.calibrationOffset]);
+  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData, calibrationEditor]);
 
   return chartData;
 };

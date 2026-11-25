@@ -15,7 +15,7 @@ const defaultFilters = {
   calibrationEnd: null,                // string | null
   calibrationOffset: 0.0,              // metres, float
   calibrationReference: 'none',        // 'none' | 'Ashdod' | 'Ashkelon'
-  calibrationCorrectionType: 'offset', // 'offset' | 'interpolate' | 'relative'
+  calibrationCorrectionType: 'offset', // 'offset' | 'interpolate' | 'relative' | 'delete' | 'restore' | 'manual'
   calibrationExpectedGap: null,        // metres, float | null — only used in relative mode
   calibrationStrength: 'follow',       // relative mode: 'follow' (Target = Ref + Gap) | 'level' (one constant shift)
   calibrationDriftThreshold: 0.05,     // metres — drift detection threshold

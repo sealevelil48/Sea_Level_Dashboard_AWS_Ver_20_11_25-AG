@@ -654,7 +654,20 @@ function Dashboard() {
     isFullscreen: isGraphFullscreen,
     isMobile,
     calibrationPreviewData: filters.calibrationPreviewData,
+    calibrationEditor: isAdmin && filters.calibrationMode && calibrationHook.samples
+      ? { station: calibrationHook.targetStation, samples: calibrationHook.samples.samples, selection: calibrationHook.selection }
+      : null,
   });
+
+  // Calibration editor: focus the chart on the correction window (± 5 % margin) while editing
+  const editorRange = useMemo(() => {
+    if (!isAdmin || !filters.calibrationMode || !calibrationHook.samples) return null;
+    const a = new Date(filterValues.calibrationStart).getTime();
+    const b = new Date(filterValues.calibrationEnd).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
+    const pad = (b - a) * 0.05;
+    return { min: a - pad, max: b + pad };
+  }, [isAdmin, filters.calibrationMode, calibrationHook.samples, filterValues.calibrationStart, filterValues.calibrationEnd]);
 
   // Point selection handlers
   const handlePointSelect = useCallback((pointData) => {
@@ -782,6 +795,15 @@ function Dashboard() {
     }
   }, [selectedStations, filterValues.startDate, filterValues.endDate]);
 
+  const exportRawCsv = useCallback(async () => {
+    const station = selectedStations.filter((s) => s !== 'All Stations')[0] || 'All Stations';
+    try {
+      await apiService.exportData({ station, startDate: filterValues.startDate, endDate: filterValues.endDate, series: 'raw' });
+    } catch (err) {
+      alert('Export failed. Please try again.');
+    }
+  }, [selectedStations, filterValues.startDate, filterValues.endDate]);
+
   // Sorted table data
   const sortedTableData = useMemo(() => {
     if (!tableData || tableData.length === 0) return [];
@@ -889,6 +911,7 @@ function Dashboard() {
                 onExportGraph={exportGraph}
                 onExportData={exportTable}
                 onExportCsv={exportCsv}
+                onExportRawCsv={isAdmin ? exportRawCsv : undefined}
                 isMobile={isMobile}
                 filtersOpen={filtersOpen}
                 setFiltersOpen={setFiltersOpen}
@@ -1021,6 +1044,9 @@ function Dashboard() {
                             isMobile={isMobile}
                             isFullscreen={isGraphFullscreen}
                             onPointClick={handlePointSelect}
+                            boxSelect={Boolean(isAdmin && filters.calibrationMode && calibrationHook.selectMode)}
+                            xRange={editorRange}
+                            onBoxSelect={calibrationHook.selectFromChart}
                           />
                           {deltaResult && (
                             <div style={{
@@ -1468,7 +1494,7 @@ function Dashboard() {
           isReverting={calibrationHook.isReverting}
           commitResult={calibrationHook.commitResult}
           onConfirm={calibrationHook.commitCalibration}
-          onCancel={calibrationHook.cancelCalibration}
+          onCancel={calibrationHook.dismissResult}
           onRevert={calibrationHook.revertLastCalibration}
         />
       )}

@@ -13,10 +13,14 @@ const MODE_LABEL = {
   offset: 'Vertical offset',
   interpolate: 'Linear interpolation',
   relative: 'Relative to reference station',
+  delete: 'Delete points',
+  restore: 'Restore original (raw)',
+  manual: 'Typed values',
 };
 
 const fmt = (v, digits = 3) => (v == null || Number.isNaN(Number(v)) ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(digits)}`);
 const fmtDate = (s) => (s ? new Date(s).toLocaleString() : '—');
+const nothingToDo = (p) => p && p.rows_affected === 0;
 
 const CalibrationActionBar = ({
   preview,          // preview API response or null
@@ -39,15 +43,21 @@ const CalibrationActionBar = ({
   // Relative mode: the server refuses commits when the reference covers too little of the window.
   const coverage = preview?.coverage;
   const minCoverage = preview?.parameters?.min_coverage;
-  const coverageBlocked = preview?.commit_allowed === false;
+  const coverageBlocked = preview?.commit_allowed === false && coverage != null && minCoverage != null
+    && coverage < minCoverage;
   const strength = preview?.parameters?.strength;
   const coverageMsg = coverageBlocked
     ? `Reference covers ${Math.round(coverage * 100)}% of the window — ${Math.round(minCoverage * 100)}% is required`
       + (strength === 'follow' ? '. Shorten the window, choose another reference, or use Level shift.' : '.')
     : null;
-  const change = mode === 'offset'
-    ? `${fmt(offset)} m on every sample`
-    : `${fmt(preview?.change_summary?.min)} to ${fmt(preview?.change_summary?.max)} m`;
+  const selected = preview?.parameters?.selected_samples;
+  const range = `${fmt(preview?.change_summary?.min)} to ${fmt(preview?.change_summary?.max)} m`;
+  const change = {
+    offset: `${fmt(offset)} m on ${selected ? 'each selected sample' : 'every sample'}`,
+    delete: `${(preview?.rows_deleted ?? rows).toLocaleString()} samples left out of the validated series`,
+    restore: `back to the logger value (${(preview?.rows_restored ?? 0).toLocaleString()} un-deleted)`,
+    interpolate: preview?.rows_restored ? `${range} · ${preview.rows_restored} deleted samples re-filled` : range,
+  }[mode] || range;
 
   const confirm = async () => {
     const ok = await onConfirm();
@@ -64,7 +74,7 @@ const CalibrationActionBar = ({
             <span className="text-success fw-semibold">
               {commitResult.reverted
                 ? `↺ Reverted the last correction for ${commitResult.station} (${commitResult.rows_restored?.toLocaleString() ?? 0} samples restored)`
-                : `✓ Saved ${commitResult.rows_updated?.toLocaleString() ?? '?'} corrected samples for ${commitResult.station}`}
+                : `✓ Saved ${commitResult.rows_updated?.toLocaleString() ?? '?'} edited samples for ${commitResult.station}`}
             </span>
             {!commitResult.reverted && (
               <Button variant="outline-warning" size="sm" onClick={onRevert} disabled={isReverting}>
@@ -82,8 +92,9 @@ const CalibrationActionBar = ({
             {coverageMsg && (
               <span role="alert" className="small fw-semibold" style={{ color: '#FFB454' }}>⚠ {coverageMsg}</span>
             )}
+            {nothingToDo(preview) && <span className="small text-warning">Nothing to change in this window/selection</span>}
             <Button variant="success" size="sm" onClick={() => setShowConfirm(true)}
-                    disabled={isCommitting || commitBlocked || coverageBlocked}
+                    disabled={isCommitting || commitBlocked || coverageBlocked || nothingToDo(preview)}
                     title={coverageBlocked ? coverageMsg : commitBlocked ? 'Enter a valid number first' : undefined}>
               Review &amp; commit…
             </Button>
@@ -104,7 +115,7 @@ const CalibrationActionBar = ({
             <dt className="col-5">Method</dt><dd className="col-7">{MODE_LABEL[mode] || mode}</dd>
             <dt className="col-5">From</dt><dd className="col-7">{fmtDate(preview?.start_datetime)}</dd>
             <dt className="col-5">To</dt><dd className="col-7">{fmtDate(preview?.end_datetime)}</dd>
-            <dt className="col-5">Samples affected</dt><dd className="col-7">{rows.toLocaleString()}</dd>
+            <dt className="col-5">Samples affected</dt><dd className="col-7">{rows.toLocaleString()}{selected ? ' (selected points)' : ''}</dd>
             <dt className="col-5">Change</dt><dd className="col-7">{change}</dd>
             {coverage != null && (<>
               <dt className="col-5">Reference coverage</dt>

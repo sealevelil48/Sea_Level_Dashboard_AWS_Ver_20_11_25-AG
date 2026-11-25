@@ -1,9 +1,72 @@
-import React from 'react';
-import { Card, Form, Button, Collapse, Row, Col } from 'react-bootstrap';
+import React, { useState } from 'react';
+import { Card, Form, Button, ButtonGroup, Collapse, Row, Col } from 'react-bootstrap';
 import DateRangePicker from '../DateRangePicker';
 import OffsetInput from './OffsetInput';
 import DriftPanel from './DriftPanel';
 import CustomDropdown from '../CustomDropdown';
+import CalibrationTable from './CalibrationTable';
+
+const tiny = { fontSize: '0.7rem' };
+
+/** Hydras-style point editor: select on the graph or in the table, then delete / interpolate / restore. */
+const PointEditor = ({ cal, onOpenTable }) => {
+  const n = cal.selection.size;
+  const s = cal.samples;
+  return (
+    <div className="mb-2 p-2" style={{ border: '1px solid #2a3f5f', borderRadius: 4 }}>
+      <div className="d-flex justify-content-between align-items-center mb-1">
+        <span className="small" style={{ color: '#00ff99', fontWeight: 600 }}>Point editor</span>
+        <small style={{ ...tiny, color: '#8FA3BD' }} aria-live="polite">
+          {cal.isLoadingSamples ? 'loading samples…'
+            : s ? `${s.count.toLocaleString()} samples · ${s.deleted} deleted · ${s.corrected} corrected` : ''}
+        </small>
+      </div>
+      {cal.samplesNote && <small className="d-block text-warning mb-1" style={tiny}>{cal.samplesNote}</small>}
+      <Button
+        variant={cal.selectMode ? 'warning' : 'outline-warning'}
+        size="sm" className="w-100 mb-1" style={{ fontSize: '0.75rem' }}
+        aria-pressed={cal.selectMode}
+        disabled={!s}
+        onClick={() => cal.setSelectMode(!cal.selectMode)}
+      >
+        {cal.selectMode ? '✏️ Selecting on graph — click to stop' : '✏️ Select points on graph'}
+      </Button>
+      {cal.selectMode && (
+        <small className="d-block mb-1" style={{ ...tiny, color: '#8FA3BD' }}>
+          Drag a box around points · click one point · Shift adds · Ctrl/⌘ toggles. Mouse-wheel still zooms.
+        </small>
+      )}
+      <div className="d-flex align-items-center gap-1 mb-1 flex-wrap">
+        <small style={tiny}><strong>{n.toLocaleString()}</strong> selected</small>
+        <Button variant="link" size="sm" className="p-0 ms-auto" style={tiny} disabled={!n} onClick={cal.clearSelection}>Clear</Button>
+        <Button variant="link" size="sm" className="p-0 ms-2" style={tiny} disabled={!n} onClick={cal.fitWindowToSelection}
+                title="Set the correction window to the first and last selected sample">Fit window</Button>
+      </div>
+      <ButtonGroup size="sm" className="w-100 mb-1" aria-label="Actions on the selected points">
+        <Button variant="outline-danger" style={tiny} disabled={!n || cal.isLoadingPreview}
+                onClick={() => cal.previewAs('delete')} title="Leave the selected samples out of the validated series">
+          🗑 Delete
+        </Button>
+        <Button variant="outline-info" style={tiny} disabled={!n || cal.isLoadingPreview}
+                onClick={() => cal.previewAs('interpolate')} title="Straight line between the nearest good samples">
+          〰 Interpolate
+        </Button>
+        <Button variant="outline-light" style={tiny} disabled={!n || cal.isLoadingPreview}
+                onClick={() => cal.previewAs('restore')} title="Back to the original logger value">
+          ↩ Restore
+        </Button>
+      </ButtonGroup>
+      <small className="d-block mb-1" style={{ ...tiny, color: '#8FA3BD' }}>
+        {n ? 'Offset / relative corrections below also apply to the selection only.'
+          : 'No selection: corrections apply to the whole window.'}
+      </small>
+      <Button variant="outline-secondary" size="sm" className="w-100" style={{ fontSize: '0.75rem' }}
+              disabled={!s} onClick={onOpenTable}>
+        🧾 Table view{cal.editCount ? ` · ${cal.editCount} typed` : ''}
+      </Button>
+    </div>
+  );
+};
 
 const DashboardFilters = ({
   filters,
@@ -25,7 +88,9 @@ const DashboardFilters = ({
   setFiltersOpen,
   calibrationHook,
   selectedPoints,
+  onExportRawCsv,
 }) => {
+  const [showTable, setShowTable] = useState(false);
   return (
     <>
       {isMobile && (
@@ -232,16 +297,44 @@ const DashboardFilters = ({
                       size="sm"
                       style={{ fontSize: '0.75rem' }}
                     >
-                      <option value="offset">Vertical Offset</option>
-                      <option value="interpolate">Interpolate Gap (Snip)</option>
+                      <option value="offset">Vertical Offset (shift)</option>
+                      <option value="interpolate">Interpolate (bridge / fill deleted)</option>
                       <option value="relative">Relative Gap Calibration</option>
+                      <option value="delete">Delete points</option>
+                      <option value="restore">Restore original (raw)</option>
+                      <option value="manual">Typed values (table)</option>
                     </Form.Select>
+                    {filters.calibrationCorrectionType === 'delete' && (
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        Selected samples are left out of the validated series; the raw sample is kept.
+                      </small>
+                    )}
+                    {filters.calibrationCorrectionType === 'manual' && (
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        Type corrected values in the Table view, then Preview.
+                      </small>
+                    )}
                     {filters.calibrationCorrectionType === 'interpolate' && (
                       <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
                         ℹ️ Removes spikes by linear interpolation. Offset field disabled.
                       </small>
                     )}
                   </Form.Group>
+
+                  <PointEditor cal={calibrationHook} onOpenTable={() => setShowTable(true)} />
+                  <CalibrationTable
+                    show={showTable}
+                    onHide={() => setShowTable(false)}
+                    station={calibrationHook.targetStation}
+                    samples={calibrationHook.samples?.samples}
+                    selection={calibrationHook.selection}
+                    edits={calibrationHook.edits}
+                    onToggle={calibrationHook.toggleSample}
+                    onSetSelected={calibrationHook.setSelected}
+                    onEdit={calibrationHook.setEdit}
+                    onClearEdits={calibrationHook.clearEdits}
+                    onPreviewEdits={() => { setShowTable(false); calibrationHook.previewAs('manual'); }}
+                  />
 
                   {filters.calibrationCorrectionType === 'relative' && (
                     <div className="mb-2">
@@ -481,10 +574,19 @@ const DashboardFilters = ({
                   <Col>
                     <Button variant="outline-secondary" size="sm" className="w-100 py-1"
                             onClick={onExportCsv} style={{ fontSize: '0.75rem' }}
-                            title="Full-resolution CSV generated on the server (corrected values)">
+                            title="Full-resolution CSV generated on the server (validated values)">
                       Download CSV
                     </Button>
                   </Col>
+                  {onExportRawCsv && calibrationHook && (
+                    <Col>
+                      <Button variant="outline-secondary" size="sm" className="w-100 py-1"
+                              onClick={onExportRawCsv} style={{ fontSize: '0.75rem' }}
+                              title="Original logger values with each sample's offset and deleted flag (admins)">
+                        Raw CSV
+                      </Button>
+                    </Col>
+                  )}
                 </Row>
               )}
             </Card.Body>

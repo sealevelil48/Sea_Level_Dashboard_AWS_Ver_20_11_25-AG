@@ -377,6 +377,11 @@ class ApiService {
     return result;
   }
 
+  /** Editor data: every raw sample of the window with its correction state (raw, offset, deleted). */
+  calibrationSamples(params) {
+    return this._post('/api/calibration/samples', params);
+  }
+
   calibrationReferences(params) {
     return this._post('/api/calibration/references', params);
   }
@@ -393,8 +398,8 @@ class ApiService {
    * Server-side CSV/JSON export (architect: "S3 Bucket — Downloadable Exports").
    * AWS: the API stores the file in S3 and returns a short-lived URL. On-prem: the file streams back.
    */
-  async exportData({ station, startDate, endDate, fmt = 'csv' }) {
-    const params = new URLSearchParams({ station, fmt });
+  async exportData({ station, startDate, endDate, fmt = 'csv', series = 'validated' }) {
+    const params = new URLSearchParams({ station, fmt, series });
     if (startDate) params.set('start_date', startDate);
     if (endDate) params.set('end_date', endDate);
     const res = await fetch(`${this.baseURL}/api/export?${params}`);
@@ -414,6 +419,8 @@ class ApiService {
     document.body.appendChild(link);
     link.click();
     link.remove();
+    // Release the in-memory file (a full-resolution export can be tens of MB).
+    if (link.href.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(link.href), 10000);
   }
 
   // Cancel all active requests
