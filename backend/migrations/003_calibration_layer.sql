@@ -6,11 +6,14 @@
 -- the sync. Corrections therefore live in their own table, and readers use the
 -- "Monitors_effective" view, which applies them.
 --
---   "Calibration_Offsets"      one row per corrected sample (tag, datetime, offset)
+--   "Calibration_Offsets"      one row per corrected sample (tag, datetime, offset, deleted flag)
 --   "Calibration_Audit"        one row per commit/revert: who, when, what
 --   "Calibration_Audit_Rows"   the previous offset of every affected sample (enables undo)
---   "Monitors_effective"       view = Monitors_info2 with Tab_Value_mDepthC1 corrected,
---                              plus "Raw_mDepthC1" and "Calibration_Offset"
+--   "Monitors_effective"       view = the VALIDATED series: Monitors_info2 with Tab_Value_mDepthC1
+--                              corrected and samples marked deleted left out, plus
+--                              "Raw_mDepthC1" and "Calibration_Offset"
+--
+-- The raw (original) series is always Monitors_info2 itself — it is never modified.
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS "Calibration_Offsets" (
@@ -20,6 +23,10 @@ CREATE TABLE IF NOT EXISTS "Calibration_Offsets" (
     "Audit_Id"       BIGINT,
     PRIMARY KEY ("Tab_TabularTag", "Tab_DateTime")
 );
+
+-- Graphical/tabular editor (Hydras-style "delete point"): a deleted sample stays in the raw table
+-- but is left out of the validated series. Added after the first release, hence ALTER.
+ALTER TABLE "Calibration_Offsets" ADD COLUMN IF NOT EXISTS "Deleted" BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS "Calibration_Audit" (
     "Id"               BIGSERIAL PRIMARY KEY,
@@ -47,6 +54,7 @@ CREATE TABLE IF NOT EXISTS "Calibration_Audit_Rows" (
     "Old_Offset"     DOUBLE PRECISION,           -- NULL = sample had no correction
     PRIMARY KEY ("Audit_Id", "Tab_TabularTag", "Tab_DateTime")
 );
+ALTER TABLE "Calibration_Audit_Rows" ADD COLUMN IF NOT EXISTS "Old_Deleted" BOOLEAN;  -- NULL = no row before
 
 -- Build the view from whatever columns Monitors_info2 actually has, replacing
 -- the depth column with the corrected value. Works on-prem and on Aurora.
@@ -90,7 +98,8 @@ BEGIN
             ', CAST(m."Tab_Value_mDepthC1" AS DOUBLE PRECISION) AS "Raw_mDepthC1"' ||
             ', COALESCE(o."Offset", 0) AS "Calibration_Offset"' ||
             ' FROM "Monitors_info2" m LEFT JOIN "Calibration_Offsets" o' ||
-            '   ON o."Tab_TabularTag" = m."Tab_TabularTag" AND o."Tab_DateTime" = m."Tab_DateTime"';
+            '   ON o."Tab_TabularTag" = m."Tab_TabularTag" AND o."Tab_DateTime" = m."Tab_DateTime"' ||
+            ' WHERE o."Deleted" IS NOT TRUE';   -- deleted samples are not part of the validated series
 END $$;
 
 -- One-time import of corrections made with the old in-table column (on-prem era).

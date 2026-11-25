@@ -128,3 +128,15 @@ def test_export_csv_direct_on_prem(client, keys, database):
 
 def test_export_rejects_bad_format(client, keys):
     assert client.get("/api/export", params={"fmt": "exe"}, headers=H(token(keys))).status_code == 422
+
+
+def test_export_is_full_resolution_and_raw_series_is_admin_only(client, keys, database):
+    p = {"station": "Haifa", "start_date": "2026-10-08", "end_date": "2026-10-09", "fmt": "csv"}
+    r = client.get("/api/export", params=p, headers=H(token(keys)))
+    assert len(r.content.decode("utf-8-sig").splitlines()) == 2 * 1440 + 1      # every minute, not capped at 5000
+    assert client.get("/api/export", params={**p, "series": "raw"}, headers=H(token(keys))).status_code == 403
+    r = client.get("/api/export", params={**p, "series": "raw"}, headers=H(token(keys, email="benp@mapi.gov.il")))
+    assert r.status_code == 200
+    header = r.content.decode("utf-8-sig").splitlines()[0]
+    assert "Raw_mDepthC1" in header and "Calibration_Offset" in header and "Deleted" in header
+    assert client.get("/api/export", params={**p, "start_date": "2020-01-01"}, headers=H(token(keys))).status_code == 400

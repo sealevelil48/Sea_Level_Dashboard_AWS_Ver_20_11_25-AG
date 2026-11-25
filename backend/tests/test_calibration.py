@@ -229,3 +229,100 @@ def test_drift_engine_threshold_and_no_drift(cal):
     status, body = call(cal.lambda_handler_suggest, w)
     assert status == 200 and body["drift_detected"] is False
     assert call(cal.lambda_handler_suggest, {**w, "threshold": 0})[0] == 400
+
+
+# ---------------------------------------------------------------------------
+# Graphical / tabular editor (OTT Hydras-style): selected points, delete, restore, manual values
+# ---------------------------------------------------------------------------
+EDIT_WIN = {"station": "Haifa", "start_datetime": "2026-10-09T10:00", "end_datetime": "2026-10-09T11:00"}
+SPIKE = ["2026-10-09 10:20:00", "2026-10-09 10:21:00", "2026-10-09 10:22:00"]
+
+
+def raw_value(cal, ts):
+    from sqlalchemy import text
+    with cal.engine.connect() as c:
+        return float(c.execute(text('SELECT m."Tab_Value_mDepthC1" FROM "Monitors_info2" m WHERE m."Tab_TabularTag" = 1 '
+                                    'AND m."Tab_DateTime" = :t'), {"t": ts}).scalar())
+
+
+def revert(cal):
+    assert call(cal.lambda_handler_revert, {"station": "Haifa", "request_id": rid()})[0] == 200
+
+
+def test_samples_lists_raw_and_state(cal):
+    status, body = call(cal.lambda_handler_samples, EDIT_WIN)
+    assert status == 200 and body["count"] == 61 and body["deleted"] == 0
+    s = body["samples"][0]
+    assert set(s) == {"Tab_DateTime", "raw_value", "offset", "value", "deleted"}
+
+
+def test_delete_selected_points_then_undo(cal):
+    status, prev = call(cal.lambda_handler_preview, {**EDIT_WIN, "correction_type": "delete", "timestamps": SPIKE})
+    assert status == 200 and prev["rows_affected"] == 3 and prev["rows_deleted"] == 3
+    assert sum(r["will_be_deleted"] for r in prev["data"]) == 3
+    status, body = call(cal.lambda_handler_commit, {**EDIT_WIN, "correction_type": "delete", "timestamps": SPIKE,
+                                                     "request_id": rid()})
+    assert status == 200 and body["rows_updated"] == 3
+    assert value(cal, ts=SPIKE[1]) is None                       # gone from the validated series
+    assert raw_value(cal, SPIKE[1]) is not None                  # raw sample untouched
+    _, samples = call(cal.lambda_handler_samples, EDIT_WIN)
+    assert samples["deleted"] == 3 and samples["count"] == 61     # editor still sees it
+    revert(cal)
+    assert value(cal, ts=SPIKE[1]) == pytest.approx(raw_value(cal, SPIKE[1]))
+
+
+def test_interpolate_across_deleted_points_refills_them(cal):
+    call(cal.lambda_handler_commit, {**EDIT_WIN, "correction_type": "delete", "timestamps": SPIKE, "request_id": rid()})
+    status, body = call(cal.lambda_handler_commit, {**EDIT_WIN, "correction_type": "interpolate", "timestamps": SPIKE,
+                                                     "request_id": rid()})
+    assert status == 200 and body["rows_updated"] == 3
+    a, b = value(cal, ts="2026-10-09 10:19:00"), value(cal, ts="2026-10-09 10:23:00")
+    assert value(cal, ts=SPIKE[1]) == pytest.approx((a + b) / 2, abs=1e-9)    # straight line, undeleted
+    revert(cal)   # undo interpolation → deleted again
+    assert value(cal, ts=SPIKE[1]) is None
+    revert(cal)   # undo delete
+    assert value(cal, ts=SPIKE[1]) is not None
+
+
+def test_offset_on_selection_only_touches_selected(cal):
+    before_sel, before_other = value(cal, ts=SPIKE[0]), value(cal, ts="2026-10-09 10:40:00")
+    status, body = call(cal.lambda_handler_commit, {**EDIT_WIN, "offset": 0.05, "timestamps": SPIKE[:1], "request_id": rid()})
+    assert status == 200 and body["rows_updated"] == 1
+    assert value(cal, ts=SPIKE[0]) == pytest.approx(before_sel + 0.05)
+    assert value(cal, ts="2026-10-09 10:40:00") == pytest.approx(before_other)
+    revert(cal)
+
+
+def test_restore_to_raw_and_undo_restore(cal):
+    call(cal.lambda_handler_commit, {**EDIT_WIN, "offset": -0.1, "request_id": rid()})
+    shifted = value(cal, ts=SPIKE[0])
+    status, body = call(cal.lambda_handler_commit, {**EDIT_WIN, "correction_type": "restore", "request_id": rid()})
+    assert status == 200 and body["rows_updated"] == 61
+    assert value(cal, ts=SPIKE[0]) == pytest.approx(raw_value(cal, SPIKE[0]))
+    revert(cal)   # undo restore → the -0.1 correction comes back
+    assert value(cal, ts=SPIKE[0]) == pytest.approx(shifted)
+    revert(cal)
+    # nothing left to restore → commit refused
+    assert call(cal.lambda_handler_commit, {**EDIT_WIN, "correction_type": "restore", "request_id": rid()})[0] == 422
+
+
+def test_manual_values_table_edit(cal):
+    vals = [{"Tab_DateTime": SPIKE[0], "value": 0.123}, {"Tab_DateTime": SPIKE[1], "value": 0.124}]
+    status, prev = call(cal.lambda_handler_preview, {**EDIT_WIN, "correction_type": "manual", "values": vals})
+    assert status == 200 and prev["rows_affected"] == 2
+    status, _ = call(cal.lambda_handler_commit, {**EDIT_WIN, "correction_type": "manual", "values": vals, "request_id": rid()})
+    assert status == 200
+    assert value(cal, ts=SPIKE[0]) == pytest.approx(0.123) and value(cal, ts=SPIKE[1]) == pytest.approx(0.124)
+    revert(cal)
+
+
+@pytest.mark.parametrize("extra", [
+    {"correction_type": "delete", "timestamps": ["2026-10-01 00:00:00"]},            # outside window
+    {"correction_type": "delete", "timestamps": []},
+    {"correction_type": "delete", "timestamps": "2026-10-09 10:20"},
+    {"correction_type": "manual", "values": [{"Tab_DateTime": SPIKE[0], "value": 50}]},  # > 10 m from raw
+    {"correction_type": "manual", "values": [{"Tab_DateTime": SPIKE[0], "value": "x"}]},
+    {"correction_type": "nope"},
+])
+def test_editor_validation(cal, extra):
+    assert call(cal.lambda_handler_preview, {**EDIT_WIN, **extra})[0] == 400

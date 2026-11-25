@@ -271,22 +271,71 @@ def analytics(analysis_type: str = Query("rolling_avg", max_length=30), station:
     return _respond(get_analytics_handler(_event("/analytics", params), None), PRIVATE_SHORT)
 
 
+_EXPORT_SQL = {
+    # Validated series (what the dashboard shows): corrections applied, deleted samples left out
+    "validated": """
+        SELECT m."Tab_DateTime", l."Station", CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS "Tab_Value_mDepthC1",
+               CAST(m."Tab_Value_monT2m" AS FLOAT) AS "Tab_Value_monT2m"
+          FROM "Monitors_effective" m JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+         WHERE (:station = 'All Stations' OR l."Station" = :station)
+           AND m."Tab_DateTime" >= :start AND m."Tab_DateTime" < :end
+         ORDER BY l."Station", m."Tab_DateTime" LIMIT :limit""",
+    # Original logger values plus the correction state of each sample (admins only)
+    "raw": """
+        SELECT m."Tab_DateTime", l."Station", CAST(m."Tab_Value_mDepthC1" AS FLOAT) AS "Raw_mDepthC1",
+               COALESCE(o."Offset", 0) AS "Calibration_Offset", COALESCE(o."Deleted", false) AS "Deleted",
+               CAST(m."Tab_Value_monT2m" AS FLOAT) AS "Tab_Value_monT2m"
+          FROM "Monitors_info2" m JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+          LEFT JOIN "Calibration_Offsets" o
+            ON o."Tab_TabularTag" = m."Tab_TabularTag" AND o."Tab_DateTime" = m."Tab_DateTime"
+         WHERE (:station = 'All Stations' OR l."Station" = :station)
+           AND m."Tab_DateTime" >= :start AND m."Tab_DateTime" < :end
+         ORDER BY l."Station", m."Tab_DateTime" LIMIT :limit""",
+}
+EXPORT_MAX_ROWS = int(os.getenv("EXPORT_MAX_ROWS", "600000"))
+
+
+def _export_dates(start_date: Optional[str], end_date: Optional[str]):
+    from datetime import timedelta
+    try:
+        end = datetime.fromisoformat(end_date[:10]) + timedelta(days=1) if end_date else datetime.now()
+        start = datetime.fromisoformat(start_date[:10]) if start_date else end - timedelta(days=7)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date/end_date must be YYYY-MM-DD")
+    if start >= end or (end - start).days > 400:
+        raise HTTPException(status_code=400, detail="Export range must be 1–400 days")
+    return start, end
+
+
 @app.get("/api/export")
-def export(station: str = Query("All Stations", max_length=200),
+def export(station: str = Query("All Stations", max_length=50),
            start_date: Optional[str] = Query(None, max_length=40), end_date: Optional[str] = Query(None, max_length=40),
-           fmt: str = Query("csv", pattern="^(csv|json)$"), user: Identity = Depends(current_user)):
-    """CSV/JSON export of the (corrected) series → S3 presigned URL (AWS) or direct download (on-prem)."""
+           fmt: str = Query("csv", pattern="^(csv|json)$"), series: str = Query("validated", pattern="^(validated|raw)$"),
+           user: Identity = Depends(current_user)):
+    """Full-resolution CSV/JSON export → S3 presigned URL (AWS) or direct download (on-prem).
+
+    series=validated (default): corrected values, deleted samples left out — for reporting.
+    series=raw (admins): original logger values with each sample's offset and deleted flag.
+    """
     from fastapi.responses import Response
+    from sqlalchemy import text
+    from shared.database import engine
     from shared.exports import store
-    resp = get_data_handler(_event("/data", {"station": station, "start_date": start_date, "end_date": end_date,
-                                              "data_source": "default", "limit": "5000"}), None)
-    if int(resp.get("statusCode", 500)) != 200:
-        return _respond(resp)
-    records = json.loads(resp["body"]) if isinstance(resp.get("body"), str) else resp.get("body")
-    if not isinstance(records, list):
-        records = []
-    url, filename, body = store(records, fmt, station, user.sub)
-    logger.info("export station=%s rows=%s fmt=%s user=%s", station, len(records), fmt, user.sub)
+    if series == "raw" and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Raw series export is restricted to administrators")
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    start, end = _export_dates(start_date, end_date)
+    with engine.connect() as conn:
+        res = conn.execute(text(_EXPORT_SQL[series]),
+                           {"station": station, "start": start, "end": end, "limit": EXPORT_MAX_ROWS + 1})
+        cols = list(res.keys())
+        records = [dict(zip(cols, (str(v) if k == "Tab_DateTime" else v for k, v in zip(cols, row))))
+                   for row in res.fetchall()]
+    if len(records) > EXPORT_MAX_ROWS:
+        raise HTTPException(status_code=413, detail=f"More than {EXPORT_MAX_ROWS} rows — export a shorter range")
+    url, filename, body = store(records, fmt, f"{station}_{series}", user.sub)
+    logger.info("export station=%s series=%s rows=%s fmt=%s user=%s", station, series, len(records), fmt, user.sub)
     if url:
         return {"url": url, "filename": filename, "rows": len(records), "expires_in_seconds": 900}
     return Response(body, media_type="text/csv" if fmt == "csv" else "application/json",
@@ -366,7 +415,7 @@ def outliers_refresh(user: Identity = Depends(admin_user)):
     return SouthernBaselineAPI(db_manager).refresh_cache()
 
 
-_MAX_BODY = 64 * 1024
+_MAX_BODY = 2 * 1024 * 1024   # editor selections / typed values (≤ 20,000 samples)
 
 
 async def _calibration(request: Request, user: Identity, handler):
@@ -381,6 +430,11 @@ async def _calibration(request: Request, user: Identity, handler):
     result = await run_in_threadpool(handler, _event(request.url.path, user=user, body=raw.decode("utf-8") or "{}",
                                                      method="POST"), None)
     return _respond(result)
+
+
+@app.post("/api/calibration/samples")
+async def calibration_samples(request: Request, user: Identity = Depends(admin_user)):
+    return await _calibration(request, user, calibration.lambda_handler_samples if calibration else None)
 
 
 @app.post("/api/calibration/preview")

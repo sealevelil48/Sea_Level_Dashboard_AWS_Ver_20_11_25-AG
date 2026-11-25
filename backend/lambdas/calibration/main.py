@@ -2,7 +2,17 @@
 """
 Calibration correction service — admin only.
 
-Handlers: preview (read-only), suggest (read-only), commit (write), revert (write), history (read).
+Handlers: samples / preview / suggest / references / suggest-gap / history (read-only),
+commit and revert (write).
+
+Editor operations (OTT Hydras-style graphical + tabular editor):
+  offset       shift values by a constant (datum/reference offset)
+  interpolate  linear interpolation across the window or the selected points (also re-fills deleted ones)
+  relative     follow / level-shift to a reference station (+ expected gap)
+  delete       remove bad samples from the validated series (raw sample kept)
+  restore      back to the original raw value (removes correction and deletion)
+  manual       typed values per timestamp (tabular editing)
+Every operation can act on the whole window or on selected samples (`timestamps`).
 
 Data model (migration 003_calibration_layer.sql):
   * Raw data in "Monitors_info2" is never modified (on AWS it is a replica of on-prem).
@@ -159,11 +169,63 @@ def _number(body, field, default=None, max_abs=MAX_OFFSET_M):
     return val
 
 
+CORRECTION_TYPES = ("offset", "interpolate", "relative", "delete", "restore", "manual")
+MAX_SELECTED = 20000          # selected samples / typed values per request
+MAX_EDITOR_SAMPLES = 20000    # ~2 weeks at 1-minute sampling
+MAX_ANCHOR_GAP = timedelta(days=1)
+
+
 def _correction_type(body):
     ct = body.get("correction_type") or "offset"
-    if ct not in ("offset", "interpolate", "relative"):
-        raise _BadRequest(400, "correction_type must be 'offset', 'interpolate' or 'relative'")
+    if ct not in CORRECTION_TYPES:
+        raise _BadRequest(400, "correction_type must be one of: " + ", ".join(CORRECTION_TYPES))
     return ct
+
+
+def _parse_ts_list(raw, field):
+    if not isinstance(raw, list):
+        raise _BadRequest(400, f"{field} must be a list")
+    if len(raw) > MAX_SELECTED:
+        raise _BadRequest(400, f"{field}: at most {MAX_SELECTED} samples per request")
+    try:
+        ts = pd.to_datetime(pd.Series([str(t).strip() for t in raw]), format="ISO8601")
+    except (ValueError, TypeError):
+        raise _BadRequest(400, f"{field} must contain ISO-8601 timestamps")
+    if getattr(ts.dt, "tz", None) is not None:
+        ts = ts.dt.tz_localize(None)
+    return ts
+
+
+def _selection(body, df):
+    """Boolean mask of the samples the operation acts on: `timestamps` if given, else the whole window."""
+    raw = body.get("timestamps")
+    if raw is None:
+        return np.ones(len(df), dtype=bool), None
+    ts = _parse_ts_list(raw, "timestamps")
+    if ts.empty:
+        raise _BadRequest(400, "timestamps is empty — select at least one sample")
+    mask = df["Tab_DateTime"].isin(set(ts)).to_numpy()
+    missing = len(set(ts)) - int(mask.sum())
+    if missing:
+        raise _BadRequest(400, f"{missing} selected sample(s) are not in the window for this station")
+    return mask, int(mask.sum())
+
+
+def _manual_values(body):
+    raw = body.get("values")
+    if not isinstance(raw, list) or not raw:
+        raise _BadRequest(400, "manual mode needs values: [{Tab_DateTime, value}, ...]")
+    ts = _parse_ts_list([v.get("Tab_DateTime") if isinstance(v, dict) else None for v in raw], "values")
+    vals = []
+    for v in raw:
+        try:
+            x = float(v.get("value"))
+        except (TypeError, ValueError, AttributeError):
+            raise _BadRequest(400, "every value must be a number (metres)")
+        if not np.isfinite(x) or abs(x) > 100:
+            raise _BadRequest(400, "values must be finite and within ±100 m")
+        vals.append(x)
+    return pd.Series(vals, index=pd.DatetimeIndex(ts)).groupby(level=0).last()
 
 
 def _request_id(body):
@@ -215,6 +277,37 @@ _WINDOW_SQL = """
 """
 
 
+_EDITOR_SQL = """
+    SELECT m."Tab_DateTime", m."Tab_TabularTag",
+           CAST(m."Tab_Value_mDepthC1" AS DOUBLE PRECISION) AS raw_value,
+           COALESCE(o."Offset", 0)    AS "offset",
+           COALESCE(o."Deleted", false) AS deleted
+    FROM "Monitors_info2" m
+    JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
+    LEFT JOIN "Calibration_Offsets" o
+      ON o."Tab_TabularTag" = m."Tab_TabularTag" AND o."Tab_DateTime" = m."Tab_DateTime"
+    WHERE l."Station" = :station
+      AND m."Tab_DateTime" >= :start AND m."Tab_DateTime" <= :end
+      AND m."Tab_Value_mDepthC1" IS NOT NULL
+    ORDER BY m."Tab_DateTime"
+    LIMIT :limit
+"""
+
+
+def _fetch_editor_window(conn, station, start, end, limit=MAX_EDITOR_SAMPLES * 5):
+    """Every raw sample in the window, including deleted ones (the editor's view of the data)."""
+    res = conn.execute(text(_EDITOR_SQL), {"station": station, "start": start, "end": end, "limit": limit + 1})
+    df = pd.DataFrame(res.fetchall(), columns=list(res.keys()))
+    if len(df) > limit:
+        raise _BadRequest(422, f"The window has more than {limit} samples — shorten it")
+    if not df.empty:
+        df["Tab_DateTime"] = pd.to_datetime(df["Tab_DateTime"])
+        df[["raw_value", "offset"]] = df[["raw_value", "offset"]].astype(float)
+        df["deleted"] = df["deleted"].astype(bool)
+        df["current_value"] = np.where(df["deleted"], np.nan, df["raw_value"] + df["offset"])
+    return df
+
+
 def _fetch_window(conn, station, start, end):
     res = conn.execute(text(_WINDOW_SQL), {"station": station, "start": start, "end": end})
     df = pd.DataFrame(res.fetchall(), columns=list(res.keys()))
@@ -251,26 +344,87 @@ def _boundaries(conn, station, start, end):
     return found["start"], found["end"]
 
 
+def _interpolate_selected(conn, station, df, target, start, end):
+    """Linear interpolation of the selected samples from the nearest good, unselected samples."""
+    ext = _fetch_editor_window(conn, station, start - MAX_ANCHOR_GAP, end + MAX_ANCHOR_GAP)
+    chosen = set(df.loc[target, "Tab_DateTime"])
+    anchors = ext[~ext["deleted"] & ~ext["Tab_DateTime"].isin(chosen)]
+    if anchors.empty:
+        raise _BadRequest(422, "Cannot interpolate: no good samples around the selection")
+    at = anchors["Tab_DateTime"].astype("int64").to_numpy()
+    av = anchors["current_value"].to_numpy()
+    t = df.loc[target, "Tab_DateTime"].astype("int64").to_numpy()
+    left = np.searchsorted(at, t, side="right") - 1
+    right = np.searchsorted(at, t, side="left")
+    max_gap = int(MAX_ANCHOR_GAP.total_seconds() * 1e9)
+    ok = (left >= 0) & (right < len(at))
+    if not ok.all():
+        raise _BadRequest(422, "Cannot interpolate: need good data before and after every selected sample")
+    if ((t - at[left]) > max_gap).any() or ((at[right] - t) > max_gap).any():
+        raise _BadRequest(422, "Cannot interpolate: nearest good sample is more than 1 day away")
+    return np.interp(t, at, av)
+
+
 def _compute_targets(conn, body, station, start, end, ctype, reference, for_commit=False):
     """
-    Return (df, params) where df has Tab_TabularTag, Tab_DateTime, raw_value, current_value,
-    corrected_value. Shared by preview and commit so both always agree.
+    Return (df, params). df holds every sample of the window with raw_value, current_value
+    (NaN = deleted), corrected_value, new_offset, new_deleted and `changed` (rows to write).
+    Shared by preview and commit so both always agree.
     """
-    df = _fetch_window(conn, station, start, end)
+    df = _fetch_editor_window(conn, station, start, end)
     if df.empty:
         raise _BadRequest(404, "No data found for the specified station and time window")
+    selected, n_selected = _selection(body, df)
+    good = ~df["deleted"].to_numpy()
+    df["corrected_value"] = df["current_value"]
+    df["new_offset"] = df["offset"]
+    df["new_deleted"] = df["deleted"]
+    df["matched"] = True
+    params = {}
+    if n_selected is not None:
+        params["selected_samples"] = n_selected
 
     if ctype == "offset":
         offset = _number(body, "offset", default=0.0)
-        df["corrected_value"] = df["current_value"] + offset   # additive on top of existing corrections
-        params = {"offset": offset}
+        target = selected & good                                 # deleted samples stay deleted
+        df.loc[target, "corrected_value"] = df.loc[target, "current_value"] + offset   # additive
+        params["offset"] = offset
 
     elif ctype == "interpolate":
-        (t0, start_val), (t1, end_val) = _boundaries(conn, station, start, end)
-        frac = (df["Tab_DateTime"] - t0).dt.total_seconds() / (t1 - t0).total_seconds()
-        df["corrected_value"] = start_val + frac.clip(0, 1) * (end_val - start_val)
-        params = {"start_value": start_val, "end_value": end_val,
-                  "anchor_start": t0.isoformat(), "anchor_end": t1.isoformat()}
+        target = selected.copy()                                 # also re-fills deleted samples
+        if n_selected is None:
+            (t0, start_val), (t1, end_val) = _boundaries(conn, station, start, end)
+            frac = (df["Tab_DateTime"] - t0).dt.total_seconds() / (t1 - t0).total_seconds()
+            df["corrected_value"] = start_val + frac.clip(0, 1) * (end_val - start_val)
+            params.update({"start_value": start_val, "end_value": end_val,
+                           "anchor_start": t0.isoformat(), "anchor_end": t1.isoformat()})
+        else:
+            df.loc[target, "corrected_value"] = _interpolate_selected(conn, station, df, target, start, end)
+            params["anchors"] = "nearest good unselected samples"
+        df.loc[target, "new_deleted"] = False
+
+    elif ctype == "delete":
+        target = selected & good
+        df.loc[target, "corrected_value"] = np.nan
+        df.loc[target, "new_deleted"] = True                     # offset kept, so restore is exact
+
+    elif ctype == "restore":
+        target = selected & ((df["offset"].to_numpy() != 0) | df["deleted"].to_numpy())
+        df.loc[target, "corrected_value"] = df.loc[target, "raw_value"]
+        df.loc[target, "new_deleted"] = False
+
+    elif ctype == "manual":
+        values = _manual_values(body)
+        idx = pd.DatetimeIndex(df["Tab_DateTime"])
+        missing = len(values.index.difference(idx))
+        if missing:
+            raise _BadRequest(400, f"{missing} typed value(s) are not samples of this station in the window")
+        target = idx.isin(values.index)
+        df.loc[target, "corrected_value"] = values.reindex(idx[target]).to_numpy()
+        df.loc[target, "new_deleted"] = False
+        if (np.abs(df.loc[target, "corrected_value"] - df.loc[target, "raw_value"]) > MAX_OFFSET_M).any():
+            raise _BadRequest(400, f"a typed value differs from the raw value by more than {MAX_OFFSET_M} m")
+        params["typed_values"] = int(target.sum())
 
     else:  # relative — Target ≈ Reference + Gap
         if not reference:
@@ -280,38 +434,49 @@ def _compute_targets(conn, body, station, start, end, ctype, reference, for_comm
         strength = body.get("strength") or "follow"
         if strength not in ("follow", "level"):
             raise _BadRequest(400, "strength must be 'follow' or 'level'")
+        target = selected & good
+        sub = df[target]
+        if sub.empty:
+            raise _BadRequest(404, "No (undeleted) samples in the selection")
         ref = _fetch_window(conn, reference, start, end)
         if ref.empty:
             raise _BadRequest(404, f"No reference data for {reference} in window")
         # Align the reference onto the target's own timestamps (stations rarely sample in lock-step).
-        ref_aligned = align_reference(df["Tab_DateTime"], ref["Tab_DateTime"], ref["current_value"], tolerance)
-        df["ref_aligned"] = ref_aligned.to_numpy()
-        df["matched"] = df["ref_aligned"].notna()
+        ref_aligned = align_reference(sub["Tab_DateTime"], ref["Tab_DateTime"], ref["current_value"], tolerance)
+        ref_vals = ref_aligned.to_numpy()
+        matched = ~np.isnan(ref_vals)
+        df.loc[target, "matched"] = matched
         cov = coverage(ref_aligned)
         needed = MIN_COVERAGE_FOLLOW if strength == "follow" else MIN_COVERAGE_LEVEL
-        if not df["matched"].any():
+        if not matched.any():
             raise _BadRequest(404, "No reference samples within the alignment tolerance")
         # Required correction on matched samples, relative to the CURRENT (already corrected) value
-        needed_shift = (df["ref_aligned"] + gap) - df["current_value"]
+        needed_shift = pd.Series((ref_vals + gap) - sub["current_value"].to_numpy(),
+                                 index=pd.DatetimeIndex(sub["Tab_DateTime"]))
         if strength == "follow":
             # Matched samples follow the reference exactly; unmatched samples get the correction
             # interpolated in time from their neighbours, so the window has no uncorrected holes.
-            shift = needed_shift.copy()
-            shift.index = pd.DatetimeIndex(df["Tab_DateTime"])
-            shift = shift.interpolate(method="time", limit_direction="both")
-            df["corrected_value"] = df["current_value"].to_numpy() + shift.to_numpy()
+            shift = needed_shift.interpolate(method="time", limit_direction="both")
+            df.loc[target, "corrected_value"] = sub["current_value"].to_numpy() + shift.to_numpy()
         else:
             # Level shift: one robust constant keeps the target's own short-term signal (seiches, waves).
-            const = float(needed_shift[df["matched"]].median())
-            df["corrected_value"] = df["current_value"] + const
-        params = {"reference_station": reference, "expected_gap": gap, "strength": strength,
-                  "tolerance_seconds": tolerance, "coverage": round(cov, 4), "min_coverage": needed}
+            const = float(needed_shift[matched].median())
+            df.loc[target, "corrected_value"] = sub["current_value"].to_numpy() + const
+        params.update({"reference_station": reference, "expected_gap": gap, "strength": strength,
+                       "tolerance_seconds": tolerance, "coverage": round(cov, 4), "min_coverage": needed})
         if strength == "level":
             params["level_shift"] = round(const, 4)
         if for_commit and cov < needed:
             raise _BadRequest(422, f"Reference covers {cov:.0%} of the window; {needed:.0%} is required "
                                    f"for '{strength}'. Shorten the window, widen the tolerance or pick another reference.")
 
+    df["changed"] = target
+    write = target & ~df["new_deleted"].to_numpy()
+    df.loc[write, "new_offset"] = df.loc[write, "corrected_value"] - df.loc[write, "raw_value"]
+    if not np.isfinite(df.loc[target & ~df["new_deleted"].to_numpy(), "new_offset"]).all():
+        raise _BadRequest(422, "Correction produced invalid values")
+    if for_commit and not target.any():
+        raise _BadRequest(422, "Nothing to change in this window/selection")
     return df, params
 
 
@@ -327,15 +492,16 @@ def _stage_new_offsets(conn, df):
     from psycopg2.extras import execute_values
     conn.execute(text("""
         CREATE TEMP TABLE _cal_new ON COMMIT DROP AS
-        SELECT "Tab_TabularTag" AS tag, "Tab_DateTime" AS dt, "Offset" AS off
+        SELECT "Tab_TabularTag" AS tag, "Tab_DateTime" AS dt, "Offset" AS off, "Deleted" AS del
           FROM "Calibration_Offsets" WITH NO DATA
     """))
     values = list(zip(df["Tab_TabularTag"].tolist(),
                       [d.to_pydatetime() for d in df["Tab_DateTime"]],
-                      df["new_offset"].astype(float).tolist()))
+                      df["new_offset"].astype(float).tolist(),
+                      df["new_deleted"].astype(bool).tolist()))
     cur = conn.connection.dbapi_connection.cursor()
     try:
-        execute_values(cur, "INSERT INTO _cal_new (tag, dt, off) VALUES %s", values, page_size=5000)
+        execute_values(cur, "INSERT INTO _cal_new (tag, dt, off, del) VALUES %s", values, page_size=5000)
     finally:
         cur.close()
     return len(values)
@@ -363,6 +529,10 @@ def _guarded(fn):
     return wrapper
 
 
+def _num(v):
+    return None if v is None or not np.isfinite(v) else float(v)
+
+
 @_guarded
 def lambda_handler_preview(event, ident):
     body = _parse_body(event)
@@ -373,7 +543,8 @@ def lambda_handler_preview(event, ident):
     with engine.connect() as conn:
         df, params = _compute_targets(conn, body, station, start, end, ctype, reference)
         refs = _reference_rows(conn, reference, start, end)
-    delta = df["corrected_value"] - df["current_value"]
+    changed = df["changed"].to_numpy()
+    delta = (df["corrected_value"] - df["current_value"])[changed].dropna()
     return _ok({
         "station": station,
         "correction_type": ctype,
@@ -381,17 +552,43 @@ def lambda_handler_preview(event, ident):
         "offset_applied": params.get("offset"),
         "start_datetime": start.isoformat(),
         "end_datetime": end.isoformat(),
-        "rows_affected": int(len(df)),
-        "change_summary": {"min": float(delta.min()), "max": float(delta.max()), "mean": float(delta.mean())},
+        "rows_affected": int(changed.sum()),
+        "rows_deleted": int((df["new_deleted"] & ~df["deleted"]).sum()),
+        "rows_restored": int((~df["new_deleted"] & df["deleted"]).sum()),
+        "change_summary": {"min": _num(delta.min()) if len(delta) else 0.0,
+                           "max": _num(delta.max()) if len(delta) else 0.0,
+                           "mean": _num(delta.mean()) if len(delta) else 0.0},
         "coverage": params.get("coverage"),
-        "commit_allowed": params.get("coverage") is None or params["coverage"] >= params.get("min_coverage", 0),
+        "commit_allowed": bool(changed.any()) and (
+            params.get("coverage") is None or params["coverage"] >= params.get("min_coverage", 0)),
         "data": [
-            {"Tab_DateTime": str(r.Tab_DateTime), "Station": station, "raw_value": r.raw_value,
-             "current_value": r.current_value, "corrected_value": r.corrected_value,
-             "matched": bool(getattr(r, "matched", True))}
+            {"Tab_DateTime": str(r.Tab_DateTime), "Station": station, "raw_value": _num(r.raw_value),
+             "current_value": _num(r.current_value), "corrected_value": _num(r.corrected_value),
+             "deleted": bool(r.deleted), "will_be_deleted": bool(r.new_deleted),
+             "changed": bool(r.changed), "matched": bool(r.matched)}
             for r in df.itertuples(index=False)
         ],
         "reference_data": refs,
+    })
+
+
+@_guarded
+def lambda_handler_samples(event, ident):
+    """The editor's table/graph data: every raw sample of the window with its correction state."""
+    body = _parse_body(event)
+    station = _station(body.get("station"))
+    start, end = _window(body)
+    with engine.connect() as conn:
+        df = _fetch_editor_window(conn, station, start, end, limit=MAX_EDITOR_SAMPLES)
+    return _ok({
+        "station": station, "start_datetime": start.isoformat(), "end_datetime": end.isoformat(),
+        "count": int(len(df)), "deleted": int(df["deleted"].sum()) if len(df) else 0,
+        "corrected": int((df["offset"] != 0).sum()) if len(df) else 0,
+        "samples": [
+            {"Tab_DateTime": str(r.Tab_DateTime), "raw_value": _num(r.raw_value), "offset": _num(r.offset),
+             "value": _num(r.current_value), "deleted": bool(r.deleted)}
+            for r in df.itertuples(index=False)
+        ],
     })
 
 
@@ -415,7 +612,7 @@ def lambda_handler_commit(event, ident):
         conn.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"calibration:{station}"})
 
         df, params = _compute_targets(conn, body, station, start, end, ctype, reference, for_commit=True)
-        df["new_offset"] = df["corrected_value"] - df["raw_value"]
+        df = df[df["changed"]]
 
         audit_id = conn.execute(text("""
             INSERT INTO "Calibration_Audit" ("Request_Id", "Action", "Station", "Correction_Type",
@@ -428,17 +625,24 @@ def lambda_handler_commit(event, ident):
         n_rows = _stage_new_offsets(conn, df)
         # Snapshot previous offsets (NULL where there was none) for undo, then upsert — set-based.
         conn.execute(text("""
-            INSERT INTO "Calibration_Audit_Rows" ("Audit_Id", "Tab_TabularTag", "Tab_DateTime", "Old_Offset")
-            SELECT :aid, n.tag, n.dt, o."Offset"
+            INSERT INTO "Calibration_Audit_Rows" ("Audit_Id", "Tab_TabularTag", "Tab_DateTime", "Old_Offset", "Old_Deleted")
+            SELECT :aid, n.tag, n.dt, o."Offset", o."Deleted"
               FROM _cal_new n
               LEFT JOIN "Calibration_Offsets" o ON o."Tab_TabularTag" = n.tag AND o."Tab_DateTime" = n.dt
         """), {"aid": audit_id})
         conn.execute(text("""
-            INSERT INTO "Calibration_Offsets" ("Tab_TabularTag", "Tab_DateTime", "Offset", "Audit_Id")
-            SELECT n.tag, n.dt, n.off, :aid FROM _cal_new n
+            INSERT INTO "Calibration_Offsets" ("Tab_TabularTag", "Tab_DateTime", "Offset", "Deleted", "Audit_Id")
+            SELECT n.tag, n.dt, n.off, n.del, :aid FROM _cal_new n
             ON CONFLICT ("Tab_TabularTag", "Tab_DateTime")
-            DO UPDATE SET "Offset" = EXCLUDED."Offset", "Audit_Id" = EXCLUDED."Audit_Id"
+            DO UPDATE SET "Offset" = EXCLUDED."Offset", "Deleted" = EXCLUDED."Deleted",
+                          "Audit_Id" = EXCLUDED."Audit_Id"
         """), {"aid": audit_id})
+        # Rows back to "no correction" (restore): drop them instead of keeping offset 0 rows.
+        conn.execute(text("""
+            DELETE FROM "Calibration_Offsets" o USING _cal_new n
+             WHERE o."Tab_TabularTag" = n.tag AND o."Tab_DateTime" = n.dt
+               AND n.off = 0 AND n.del = false
+        """))
         rows = range(n_rows)
 
     logger.info("[AUDIT] commit id=%s station=%s type=%s rows=%s user=%s", audit_id, station, ctype, len(rows), ident.email)
@@ -484,10 +688,12 @@ def lambda_handler_revert(event, ident):
                AND o."Tab_TabularTag" = r."Tab_TabularTag" AND o."Tab_DateTime" = r."Tab_DateTime"
         """), {"a": target})
         conn.execute(text("""
-            UPDATE "Calibration_Offsets" o SET "Offset" = r."Old_Offset", "Audit_Id" = :rev
+            INSERT INTO "Calibration_Offsets" ("Tab_TabularTag", "Tab_DateTime", "Offset", "Deleted", "Audit_Id")
+            SELECT r."Tab_TabularTag", r."Tab_DateTime", r."Old_Offset", COALESCE(r."Old_Deleted", false), :rev
               FROM "Calibration_Audit_Rows" r
              WHERE r."Audit_Id" = :a AND r."Old_Offset" IS NOT NULL
-               AND o."Tab_TabularTag" = r."Tab_TabularTag" AND o."Tab_DateTime" = r."Tab_DateTime"
+            ON CONFLICT ("Tab_TabularTag", "Tab_DateTime")
+            DO UPDATE SET "Offset" = EXCLUDED."Offset", "Deleted" = EXCLUDED."Deleted", "Audit_Id" = EXCLUDED."Audit_Id"
         """), {"a": target, "rev": rev_id})
         conn.execute(text('UPDATE "Calibration_Audit" SET "Reverted_By_Id" = :rev WHERE "Id" = :a'),
                      {"rev": rev_id, "a": target})
@@ -665,7 +871,8 @@ def _invalidate_cache():
 def lambda_handler(event, context):
     """Route by path (API Gateway proxy integration)."""
     path = (event.get("path") or event.get("rawPath") or "").rstrip("/")
-    for suffix, handler in (("/preview", lambda_handler_preview), ("/commit", lambda_handler_commit),
+    for suffix, handler in (("/samples", lambda_handler_samples),
+                            ("/preview", lambda_handler_preview), ("/commit", lambda_handler_commit),
                             ("/suggest-gap", lambda_handler_suggest_gap), ("/suggest", lambda_handler_suggest),
                             ("/references", lambda_handler_references), ("/revert", lambda_handler_revert),
                             ("/history", lambda_handler_history)):
