@@ -16,7 +16,7 @@ Environment:
   COGNITO_USER_POOL_ID   e.g. il-central-1_AbCdEf
   COGNITO_APP_CLIENT_ID  the SPA app client id (ID token "aud")
   ADMIN_EMAILS           comma-separated, e.g. benp@mapi.gov.il
-  ADMIN_GROUP            Cognito group that also grants admin (default "admin")
+  ADMIN_GROUP            Cognito group that also grants admin (default: none — only ADMIN_EMAILS)
   ALLOW_INSECURE_LOCAL_CALIBRATION  "true" lets calibration run with AUTH_MODE=disabled (dev DB only)
 """
 from __future__ import annotations
@@ -55,7 +55,12 @@ class Identity:
     def is_admin(self) -> bool:
         if not self.email_verified:
             return False
-        return self.email.lower() in admin_emails() or _env("ADMIN_GROUP", "admin") in self.groups
+        if self.sub == "local-dev":   # AUTH_MODE=disabled — admin only with the explicit dev-only flag
+            return auth_mode() == "disabled" and _env("ALLOW_INSECURE_LOCAL_CALIBRATION").lower() == "true"
+        # Admin = the addresses in ADMIN_EMAILS (benp@mapi.gov.il). A Cognito group grants admin only if
+        # ADMIN_GROUP is set explicitly — off by default, so nobody becomes admin from the AWS console.
+        group = _env("ADMIN_GROUP")
+        return self.email.lower() in admin_emails() or bool(group and group in self.groups)
 
     def to_public(self) -> Dict[str, Any]:
         return {"email": self.email, "is_admin": self.is_admin, "groups": self.groups}

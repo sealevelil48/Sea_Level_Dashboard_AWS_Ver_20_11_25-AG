@@ -1,0 +1,5 @@
+# Annual mean sea level (metres) for the long-term chart "מפלס הים התיכון בישראל".
+# Fill in the years before the database once (from the Excel behind the 1958-2025 slide).
+# The yearly report adds the new year itself (reference station: REPORT_REFERENCE_STATIONS, default Ashdod).
+# Format: Year,Mean_m  — e.g. 1958,0.055
+Year,Mean_m

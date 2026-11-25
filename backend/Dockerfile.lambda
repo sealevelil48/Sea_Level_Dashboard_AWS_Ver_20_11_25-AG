@@ -10,6 +10,8 @@ COPY app.py lambda_entry.py mapframe.html mariners_mapframe.html ${LAMBDA_TASK_R
 COPY shared/ ${LAMBDA_TASK_ROOT}/shared/
 COPY lambdas/ ${LAMBDA_TASK_ROOT}/lambdas/
 COPY migrations/ ${LAMBDA_TASK_ROOT}/migrations/
+COPY reports/ ${LAMBDA_TASK_ROOT}/reports/
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 # Default; each function overrides ImageConfig.Command in infra/template.yaml
 CMD ["lambda_entry.api_handler"]

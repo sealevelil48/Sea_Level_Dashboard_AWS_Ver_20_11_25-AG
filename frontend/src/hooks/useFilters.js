@@ -7,6 +7,7 @@ const defaultFilters = {
   trendline: 'none',
   analysisType: 'none',
   showAnomalies: false,
+  showSunTimes: true,                  // sunrise/sunset markers on the main graph
   predictionModels: [],
   forecastHours: 72,
   // Calibration correction state

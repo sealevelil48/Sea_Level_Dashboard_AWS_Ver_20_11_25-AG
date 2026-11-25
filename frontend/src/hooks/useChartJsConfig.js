@@ -145,6 +145,7 @@ export const useChartJsConfig = ({
   isMobile, // eslint-disable-line no-unused-vars
   calibrationPreviewData, // optional — calibration correction preview overlay
   calibrationEditor = null, // optional — { station, samples, selection } (admin editor)
+  tideEvents = null,        // optional — Tidal Data: [{Station, Tab_DateTime, Type, Tab_Value_mDepthC1}]
 }) => {
   const chartData = useMemo(() => {
     const datasets = [];
@@ -256,6 +257,35 @@ export const useChartJsConfig = ({
         spanGaps: false, // Show gaps when data is missing
       });
     });
+
+    // Tidal Data: high (▲) and low (▼) tides on each station's line
+    if (Array.isArray(tideEvents) && tideEvents.length > 0) {
+      const byStation = {};
+      tideEvents.forEach((e) => {
+        const key = `${e.Station}|${e.Type}`;
+        (byStation[key] = byStation[key] || []).push({
+          x: new Date(e.Tab_DateTime), y: e.Tab_Value_mDepthC1,
+        });
+      });
+      Object.entries(byStation).forEach(([key, pts]) => {
+        const [st, type] = key.split('|');
+        if (selectedStations.length > 0 && !selectedStations.includes('All Stations')
+            && !selectedStations.includes(st)) return;
+        const high = type === 'High';
+        datasets.push({
+          label: `${st} ${high ? 'high' : 'low'} tides`,
+          data: pts,
+          showLine: false,
+          pointStyle: 'triangle',
+          rotation: high ? 0 : 180,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderColor: '#ffffff',
+          borderWidth: 1,
+          backgroundColor: high ? '#22d3ee' : '#f97316',
+        });
+      });
+    }
 
     // Add anomalies if enabled
     if (filters.showAnomalies) {
@@ -675,7 +705,8 @@ export const useChartJsConfig = ({
     }
 
     return { datasets };
-  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData, calibrationEditor]);
+  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData, calibrationEditor,
+      tideEvents]);
 
   return chartData;
 };

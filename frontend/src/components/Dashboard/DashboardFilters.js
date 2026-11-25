@@ -482,6 +482,17 @@ const DashboardFilters = ({
                 </small>
               </Form.Group>
 
+              <Form.Group className="mb-2">
+                <Form.Check
+                  type="checkbox"
+                  id="sun-times-check"
+                  label="Show sunrise / sunset"
+                  checked={filters.showSunTimes !== false}
+                  onChange={(e) => onFilterChange('showSunTimes', e.target.checked)}
+                  className="small"
+                />
+              </Form.Group>
+
               {/* Prediction Models */}
               <Form.Group className="mb-2">
                 <Form.Label className="small mb-1">Prediction Models</Form.Label>

@@ -5,6 +5,7 @@ AWS Lambda entry points (one container image, several functions — see infra/te
   lambda_entry.calibration_handler  same app, calibration routes (calibration writer credentials)
   lambdas.sync.main.handler       EventBridge, every minute: on-prem PostgreSQL → Aurora
   lambdas.cognito_access.main.handler  Cognito triggers: only approved Google accounts may sign in
+  lambda_entry.reports_handler    EventBridge (1st of the month, 2 Jan) / API: website reports → S3
 
 Database credentials come from Secrets Manager (DB_SECRET_ARN) at cold start, never from env text.
 """
@@ -33,3 +34,9 @@ from app import app  # noqa: E402
 
 api_handler = Mangum(app, lifespan="off")
 calibration_handler = api_handler  # same app; API Gateway routes /api/calibration/* to the writer function
+
+
+def reports_handler(event, context):
+    """Monthly/yearly reports job (EventBridge schedule or async invoke from the API)."""
+    from lambdas.reports.main import handler
+    return handler(event, context)

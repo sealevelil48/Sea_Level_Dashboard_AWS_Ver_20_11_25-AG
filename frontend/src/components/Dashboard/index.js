@@ -15,6 +15,7 @@ import ErrorBoundary from '../ErrorBoundary';
 import DashboardHeader from './DashboardHeader';
 import DashboardFilters from './DashboardFilters';
 import CalibrationActionBar from './CalibrationActionBar';
+import ReportsPanel from './ReportsPanel';
 import { useAuth } from '../../auth/AuthProvider';
 import SeaLevelChart from './SeaLevelChart';
 import DashboardMap from './DashboardMap';
@@ -67,6 +68,8 @@ function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [graphData, setGraphData] = useState([]);
   const [tableData, setTableData] = useState([]);
+  const [tideEvents, setTideEvents] = useState(null);   // Tidal Data: high/low tides per station
+  const [tidesNote, setTidesNote] = useState(null);
   const [predictions, setPredictions] = useState({});
   const [forecastData, setForecastData] = useState(null);
   const [stats, setStats] = useState({
@@ -445,7 +448,9 @@ function Dashboard() {
       const params = {
         start_date: filterValues.startDate,
         end_date: filterValues.endDate,
-        data_source: filterValues.dataType,
+        // Tidal Data = the sea-level series plus every high/low tide computed from it (/api/tides).
+        // The old SeaTides table is refreshed rarely on-prem, so recent dates returned 404.
+        data_source: 'default',
         include_outliers: filterValues.showAnomalies ? 'true' : 'false'
       };
 
@@ -481,8 +486,24 @@ function Dashboard() {
 
         setGraphData(allData || []);
 
+        let tideRows = null;
+        if (filterValues.dataType === 'tides') {
+          try {
+            const t = await apiService.getTides(stationsToFetch, filterValues.startDate, filterValues.endDate);
+            tideRows = t?.events || [];
+            setTidesNote(tideRows.length ? null : 'No high/low tides found in this range');
+          } catch (e) {
+            tideRows = [];
+            setTidesNote(e.data?.detail || e.data?.error || 'Tidal analysis is unavailable for this range');
+          }
+        } else {
+          setTidesNote(null);
+        }
+        if (!isMounted.current) return;
+        setTideEvents(tideRows);
+
         // Sort data in ASC order by default (oldest to newest)
-        setTableData([...(allData || [])].sort((a, b) => {
+        setTableData([...(tideRows || allData || [])].sort((a, b) => {
           const dateA = a.Tab_DateTime || a.Date || '';
           const dateB = b.Tab_DateTime || b.Date || '';
           return dateA.localeCompare(dateB);
@@ -654,6 +675,7 @@ function Dashboard() {
     isFullscreen: isGraphFullscreen,
     isMobile,
     calibrationPreviewData: filters.calibrationPreviewData,
+    tideEvents: filters.dataType === 'tides' ? tideEvents : null,
     calibrationEditor: isAdmin && filters.calibrationMode && calibrationHook.samples
       ? { station: calibrationHook.targetStation, samples: calibrationHook.samples.samples, selection: calibrationHook.selection }
       : null,
@@ -1046,6 +1068,8 @@ function Dashboard() {
                             onPointClick={handlePointSelect}
                             boxSelect={Boolean(isAdmin && filters.calibrationMode && calibrationHook.selectMode)}
                             xRange={editorRange}
+                            sunStation={filters.showSunTimes
+                              ? (selectedStations.find((st) => st !== 'All Stations') || 'Haifa') : null}
                             onBoxSelect={calibrationHook.selectFromChart}
                           />
                           {deltaResult && (
@@ -1122,6 +1146,16 @@ function Dashboard() {
                           </Button>
                         </div>
                       )}
+                      {filters.dataType === 'tides' && (
+                        <div className="mt-2 text-center small" role="status">
+                          {tidesNote
+                            ? <span className="text-warning">{tidesNote}</span>
+                            : <span style={{ color: '#8FA3BD' }}>
+                                ▲ high tide · ▼ low tide — {tideEvents?.length ?? 0} tides, computed from the
+                                validated series (see Table View for times)
+                              </span>}
+                        </div>
+                      )}
                       {/* Model Status Indicator */}
                       {filters.predictionModels && filters.predictionModels.length > 0 && (
                         <div className="mt-2 text-center">
@@ -1170,8 +1204,9 @@ function Dashboard() {
                                         {renderSortableHeader('Station', 'Station')}
                                         {filters.dataType === 'tides' ? (
                                           <>
-                                            <th>High Tide (m)</th>
-                                            <th>Low Tide (m)</th>
+                                            <th>Tide</th>
+                                            <th>Level (m)</th>
+                                            <th>Temperature (°C)</th>
                                           </>
                                         ) : (
                                           <>
@@ -1189,12 +1224,13 @@ function Dashboard() {
                                         .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                                         .map((row, idx) => (
                                           <tr key={idx}>
-                                            <td>{filters.dataType === 'tides' ? row.Date : formatDateTime(row.Tab_DateTime)}</td>
+                                            <td>{formatDateTime(row.Tab_DateTime)}</td>
                                             <td>{row.Station}</td>
                                             {filters.dataType === 'tides' ? (
                                               <>
-                                                <td>{safeToFixed(row.HighTide, 3, 'N/A')}</td>
-                                                <td>{safeToFixed(row.LowTide, 3, 'N/A')}</td>
+                                                <td>{row.Type === 'High' ? '▲ High' : '▼ Low'}</td>
+                                                <td>{safeToFixed(row.Tab_Value_mDepthC1, 3, 'N/A')}</td>
+                                                <td>{safeToFixed(row.Tab_Value_monT2m, 1, 'N/A')}</td>
                                               </>
                                             ) : (
                                               <>
@@ -1451,6 +1487,13 @@ function Dashboard() {
                         )}
                       </div>
                     </Tab>
+
+                    {/* Website reports — admin only (the API also refuses everyone else) */}
+                    {isAdmin && (
+                      <Tab eventKey="reports" title="Reports">
+                        {activeTab === 'reports' && <ReportsPanel />}
+                      </Tab>
+                    )}
                   </Tabs>
                 </Card.Body>
               </Card>

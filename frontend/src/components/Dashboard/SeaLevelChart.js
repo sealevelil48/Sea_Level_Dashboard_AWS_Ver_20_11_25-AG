@@ -15,6 +15,75 @@ import {
 import { Line } from 'react-chartjs-2';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import 'chartjs-adapter-date-fns';
+import { sunEvents } from '../../utils/sunTimes';
+
+const SUN_MAX_SPAN_DAYS = 31;   // more than a month of markers is clutter — zoom in to see them
+
+/** Draws a small sun with an up (sunrise) or down (sunset) arrow. */
+function drawSun(ctx, x, y, rising) {
+  ctx.save();
+  ctx.fillStyle = '#FDB813';
+  ctx.strokeStyle = '#FDB813';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.arc(x, y, 4, Math.PI, 0);           // half sun on the horizon
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x - 7, y + 0.5);
+  ctx.lineTo(x + 7, y + 0.5);              // horizon
+  for (const a of [-150, -120, -90, -60, -30]) {   // rays
+    const r = (a * Math.PI) / 180;
+    ctx.moveTo(x + Math.cos(r) * 5.5, y + Math.sin(r) * 5.5);
+    ctx.lineTo(x + Math.cos(r) * 7.5, y + Math.sin(r) * 7.5);
+  }
+  ctx.stroke();
+  ctx.beginPath();                         // arrow
+  const ay = y + 4;
+  if (rising) { ctx.moveTo(x - 3, ay + 3); ctx.lineTo(x, ay); ctx.lineTo(x + 3, ay + 3); }
+  else { ctx.moveTo(x - 3, ay); ctx.lineTo(x, ay + 3); ctx.lineTo(x + 3, ay); }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Chart.js plugin: sunrise/sunset markers at the top of the plot, faint dotted lines through it. */
+const sunMarkersPlugin = {
+  id: 'sunMarkers',
+  afterDatasetsDraw(chart, _args, opts) {
+    const events = opts?.events;
+    const x = chart.scales?.x;
+    if (!events?.length || !x) return;
+    const span = x.max - x.min;
+    if (!(span > 0) || span > SUN_MAX_SPAN_DAYS * 86400000) return;
+    const { top, bottom, left, right } = chart.chartArea;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.setLineDash([2, 4]);
+    ctx.lineWidth = 1;
+    events.forEach((e) => {
+      const t = e.time.getTime();
+      if (t < x.min || t > x.max) return;
+      const px = x.getPixelForValue(t);
+      if (px < left || px > right) return;
+      ctx.strokeStyle = e.type === 'sunrise' ? 'rgba(253, 184, 19, 0.28)' : 'rgba(255, 140, 60, 0.28)';
+      ctx.beginPath();
+      ctx.moveTo(px, top + 20);
+      ctx.lineTo(px, bottom);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    events.forEach((e) => {
+      const t = e.time.getTime();
+      if (t < x.min || t > x.max) return;
+      const px = x.getPixelForValue(t);
+      if (px >= left && px <= right) drawSun(ctx, px, top + 10, e.type === 'sunrise');  // in the y-axis headroom (grace) above the data
+    });
+    ctx.fillStyle = 'rgba(253, 184, 19, 0.85)';
+    ctx.font = '10px "Segoe UI", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`sunrise ↑ / sunset ↓ · ${opts.station}`, right - 4, bottom - 6);
+    ctx.restore();
+  },
+};
 
 // 1. Register Chart.js components including zoom plugin
 ChartJS.register(
@@ -56,6 +125,7 @@ const SeaLevelChart = React.forwardRef(({
   boxSelect = false,       // calibration editor: drag a box / click to select samples
   onBoxSelect = null,
   xRange = null,           // { min, max } (ms) — calibration editor focuses on the correction window
+  sunStation = null,       // station whose sunrise/sunset is marked (null = off)
 }, ref) => {
   const chartRef = useRef(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
@@ -169,6 +239,19 @@ const SeaLevelChart = React.forwardRef(({
     }
     return config;
   }, [totalDataPoints]);
+
+  // Sunrise/sunset events over the data's time range (drawn only when ≤ 31 days are visible)
+  const sunMarkers = React.useMemo(() => {
+    if (!sunStation || !data?.datasets?.length) return [];
+    let lo = Infinity;
+    let hi = -Infinity;
+    data.datasets.forEach((ds) => (ds.data || []).forEach((p) => {
+      const t = p?.x instanceof Date ? p.x.getTime() : new Date(p?.x).getTime();
+      if (Number.isFinite(t)) { if (t < lo) lo = t; if (t > hi) hi = t; }
+    }));
+    if (!Number.isFinite(lo) || hi - lo > 400 * 86400000) return [];
+    return sunEvents(new Date(lo), new Date(hi), sunStation);
+  }, [data, sunStation]);
 
   // 4. Chart Configuration
   const options = {
@@ -295,6 +378,7 @@ const SeaLevelChart = React.forwardRef(({
                              !label.includes('Selected Points') &&
                              !label.includes('Connection Line') &&
                              !label.includes('Editor') &&
+                             !label.includes(' tides') &&
                              !label.includes('Corrected') &&
                              !label.includes('Reference') &&
                              !label.includes('CI');
@@ -334,6 +418,7 @@ const SeaLevelChart = React.forwardRef(({
         // No limits - allow panning to see predictions in future dates
       },
       decimation: decimationConfig,
+      sunMarkers: { events: sunMarkers, station: sunStation },
       legend: {
         position: isMobileView || isMobile ? 'bottom' : 'top', // UX WIN: Moves legend below chart on mobile
         align: 'start',
@@ -413,6 +498,7 @@ const SeaLevelChart = React.forwardRef(({
       },
       y: {
         beginAtZero: false, // Sea level can be negative relative to reference
+        grace: sunStation ? '12%' : 0, // headroom for the sunrise/sunset icons
         title: {
           display: !isMobileView,
           text: 'Sea Level (m)',
@@ -456,7 +542,7 @@ const SeaLevelChart = React.forwardRef(({
       onPointerCancel={boxSelect ? () => { drag.current = null; setDragRect(null); } : undefined}
       data-testid="sea-level-chart"
     >
-      <Line ref={chartRef} data={data} options={options} />
+      <Line ref={chartRef} data={data} options={options} plugins={[sunMarkersPlugin]} />
       {dragRect && (
         <div aria-hidden="true" style={{
           position: 'absolute', left: dragRect.left, top: dragRect.top, width: dragRect.width, height: dragRect.height,

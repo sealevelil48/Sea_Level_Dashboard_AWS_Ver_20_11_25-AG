@@ -19,3 +19,8 @@ python-dateutil==2.9.0.post0
 pytz==2024.2
 redis==5.2.1
 boto3==1.35.99
+
+# Website reports (monthly/yearly): Excel files, charts, Hebrew text in charts
+openpyxl==3.1.5
+matplotlib==3.9.2
+python-bidi==0.6.3

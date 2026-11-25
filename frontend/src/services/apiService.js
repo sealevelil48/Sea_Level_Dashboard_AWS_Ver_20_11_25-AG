@@ -377,6 +377,38 @@ class ApiService {
     return result;
   }
 
+  /** High/low tides per station from the validated series: { events, daily, method }. */
+  getTides(stations, startDate, endDate) {
+    const q = new URLSearchParams({ stations: stations.join(','), start_date: startDate, end_date: endDate });
+    return this.request(`/api/tides?${q}`);
+  }
+
+  // --- Website reports (admin only) -----------------------------------------------------
+  listReports() {
+    return this.request('/api/reports');
+  }
+
+  generateReport({ kind, year, month }) {
+    return this._post('/api/reports/generate', month ? { kind, year, month } : { kind, year });
+  }
+
+  async downloadReport(name) {
+    const res = await fetch(`${this.baseURL}/api/reports/download?${new URLSearchParams({ name })}`);
+    if (!res.ok) throw new ApiError(res.status, res.statusText);
+    const link = document.createElement('a');
+    if ((res.headers.get('content-type') || '').includes('application/json')) {
+      const { url } = await res.json();
+      link.href = url;
+    } else {
+      link.href = URL.createObjectURL(await res.blob());
+    }
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    if (link.href.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+  }
+
   /** Editor data: every raw sample of the window with its correction state (raw, offset, deleted). */
   calibrationSamples(params) {
     return this._post('/api/calibration/samples', params);

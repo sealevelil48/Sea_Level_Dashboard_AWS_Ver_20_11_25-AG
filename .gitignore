@@ -221,3 +221,4 @@ infra/params.*.env
 infra/params.*.env
 !infra/params.example.env
 *.log
+reports_output/

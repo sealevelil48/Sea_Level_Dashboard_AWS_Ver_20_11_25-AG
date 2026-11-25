@@ -342,6 +342,30 @@ def export(station: str = Query("All Stations", max_length=50),
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+@app.get("/api/tides")
+def tides_route(stations: str = Query(..., max_length=200), start_date: str = Query(..., max_length=40),
+                end_date: str = Query(..., max_length=40), user: Identity = Depends(current_user)):
+    """Every high and low tide per station in the range, from the validated series (≤ 92 days)."""
+    from datetime import timedelta
+    from shared.database import engine
+    from shared.tides import tides
+    names = [s.strip() for s in stations.split(",") if s.strip() and s.strip() != "All Stations"][:6]
+    if not names:
+        raise HTTPException(status_code=400, detail="stations is required")
+    try:
+        start = datetime.fromisoformat(start_date[:10])
+        end = datetime.fromisoformat(end_date[:10]) + timedelta(days=1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date/end_date must be YYYY-MM-DD")
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Database not available")
+    try:
+        result = tides(engine, names, start, end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return JSONResponse(result, headers={"Cache-Control": PRIVATE_SHORT})
+
+
 @app.get("/api/stations/map")
 @app.get("/stations/map", include_in_schema=False)
 def stations_map(end_date: Optional[str] = Query(None, max_length=40), user: Identity = Depends(current_user)):
@@ -430,6 +454,63 @@ async def _calibration(request: Request, user: Identity, handler):
     result = await run_in_threadpool(handler, _event(request.url.path, user=user, body=raw.decode("utf-8") or "{}",
                                                      method="POST"), None)
     return _respond(result)
+
+
+# ---------------------------------------------------------------------------
+# Reports for the MAPI website (admin only): monthly + yearly
+# ---------------------------------------------------------------------------
+
+def _report_job(kind: str, year: int, month: Optional[int]):
+    """Generate and store one report (runs in the background / the reports Lambda)."""
+    from shared import report_store, reports
+    from shared.database import engine
+    rep = (reports.monthly_report(engine, year, month) if kind == "monthly" else reports.yearly_report(engine, year))
+    meta = report_store.save(rep)
+    logger.info("[REPORT] %s %s files=%s notes=%s", kind, rep.period, len(rep.files), rep.notes)
+    return meta
+
+
+@app.get("/api/reports")
+def reports_list(user: Identity = Depends(admin_user)):
+    from shared import report_store
+    return {"reports": report_store.list_reports()}
+
+
+@app.post("/api/reports/generate", status_code=202)
+def reports_generate(body: Dict[str, Any], user: Identity = Depends(admin_user)):
+    kind = body.get("kind")
+    if kind not in ("monthly", "yearly"):
+        raise HTTPException(status_code=400, detail="kind must be 'monthly' or 'yearly'")
+    try:
+        year = int(body.get("year"))
+        month = int(body["month"]) if kind == "monthly" else None
+    except (TypeError, ValueError, KeyError):
+        raise HTTPException(status_code=400, detail="year (and month for monthly) are required")
+    if not 2000 <= year <= datetime.now().year or (month is not None and not 1 <= month <= 12):
+        raise HTTPException(status_code=400, detail="Invalid year or month")
+    job = {"kind": kind, "year": year, "month": month, "requested_by": user.email}
+    fn = os.getenv("REPORTS_JOB_FUNCTION")
+    if fn:   # AWS: the reports Lambda (5 min timeout) — API Gateway would cut a long request at 29 s
+        import boto3
+        boto3.client("lambda").invoke(FunctionName=fn, InvocationType="Event", Payload=json.dumps(job).encode())
+    else:    # on-prem: background thread
+        import threading
+        threading.Thread(target=_report_job, args=(kind, year, month), daemon=True).start()
+    logger.info("[REPORT] queued %s by %s", job, user.email)
+    return {"status": "queued", **job}
+
+
+@app.get("/api/reports/download")
+def reports_download(name: str = Query(..., max_length=60), user: Identity = Depends(admin_user)):
+    from fastapi.responses import Response
+    from shared import report_store
+    try:
+        url, body = report_store.download(name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if url:
+        return {"url": url, "filename": name}
+    return Response(body, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.post("/api/calibration/samples")

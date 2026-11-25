@@ -140,3 +140,25 @@ def test_export_is_full_resolution_and_raw_series_is_admin_only(client, keys, da
     header = r.content.decode("utf-8-sig").splitlines()[0]
     assert "Raw_mDepthC1" in header and "Calibration_Offset" in header and "Deleted" in header
     assert client.get("/api/export", params={**p, "start_date": "2020-01-01"}, headers=H(token(keys))).status_code == 400
+
+
+def test_reports_are_admin_only(client, keys):
+    client_token = H(token(keys))
+    assert client.get("/api/reports", headers=client_token).status_code == 403
+    assert client.post("/api/reports/generate", json={"kind": "monthly", "year": 2026, "month": 10},
+                       headers=client_token).status_code == 403
+    assert client.get("/api/reports/download", params={"name": "sea_level_monthly_2026-10.zip"},
+                      headers=client_token).status_code == 403
+    admin = H(token(keys, email="benp@mapi.gov.il"))
+    assert client.post("/api/reports/generate", json={"kind": "weekly", "year": 2026}, headers=admin).status_code == 400
+    assert client.get("/api/reports/download", params={"name": "../../.env"}, headers=admin).status_code == 404
+
+
+def test_tides_route(client, keys, database):
+    r = client.get("/api/tides", params={"stations": "Haifa", "start_date": "2026-10-07", "end_date": "2026-10-09"},
+                   headers=H(token(keys)))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert {"events", "daily", "method"} <= set(body)
+    assert client.get("/api/tides", params={"stations": "Haifa", "start_date": "2026-01-01", "end_date": "2026-10-09"},
+                      headers=H(token(keys))).status_code == 400   # > 92 days
