@@ -15,7 +15,8 @@ Everything is code: `infra/template.yaml` (main stack), `infra/cloudfront-waf.ya
 | Sync from on-prem | every 5 min | every 5 min | **every 1 min** (architect) |
 | Aurora Serverless v2 | 0.5–2 ACU, no deletion protection, 3-day backups | 0.5–2 ACU | 0.5–4 ACU, deletion protection, 14-day backups |
 | Sign-in allowlist (SSM) | `mapi.gov.il` | `mapi.gov.il` + test clients | `mapi.gov.il` + approved clients |
-| Calibration admin | benp@mapi.gov.il | benp@mapi.gov.il | benp@mapi.gov.il |
+| Calibration + Reports (admin) | benp@mapi.gov.il only | benp@mapi.gov.il only | benp@mapi.gov.il only |
+| Everyone else | view only — no calibration panel, no Reports tab; API answers 403 | same | same |
 | Who deploys | any branch, no approval | `main` only, 1 reviewer | `main` only, required reviewer, same image tag that passed stg |
 
 Each environment has its own database. Corrections made in dev or stg never reach prod. **Calibration work
@@ -25,13 +26,36 @@ is done in prod only.** In prod, the calibration layer is the system of record f
 > (AWS Organizations best practice). The templates support both. For separate accounts, deploy
 > `github-deploy-role.yaml` in each account with `EnvironmentPattern=dev|stg|prod`.
 
+## 1b. Network (MAPI sheet `AWS_Network_Architecture_Updated_V3.xlsx`) and the on-prem server
+
+| | dev | stg | prod |
+|---|---|---|---|
+| VPC (sysadmin allocation, *M-Mapi-Miflas-…*) | **10.26.24.0/24** | **10.26.25.0/24** | **10.26.23.0/24** |
+| private-subnet-a (AZ 1) | 10.26.24.0/25 | 10.26.25.0/25 | 10.26.23.0/25 |
+| private-subnet-b (AZ 2) | 10.26.24.128/25 | 10.26.25.128/25 | 10.26.23.128/25 |
+
+The design sheet lists 10.0/10.1/10.2.0.0/24. I used the sysadmin's allocation in the *SysAdmin Addresses* sheet,
+assuming it is the final one. **Please confirm.**
+
+The sheet has **private subnets only (no NAT)**. The stack handles that this way:
+- `CREATE_VPC_ENDPOINTS=true` + `PRIVATE_ROUTE_TABLE_IDS` adds VPC endpoints for S3 (gateway), Secrets Manager,
+  SNS and Lambda (interface endpoints in both subnets, so they take a few IPs out of the 2 × 123 available).
+- The IMS forecast, alerts and mariners routes run in a separate Lambda **outside** the VPC, so nothing in the
+  VPC needs the internet. Cognito, CloudFront, WAF and API Gateway are managed services outside the VPC.
+
+**On-prem PostgreSQL**: the server's firewall opens **TCP/UDP 30886–30890** (`Ports.txt`). 30886/30887 are the
+current dashboard API and frontend. The sync needs TCP to PostgreSQL from **10.26.23.0/24, 10.26.24.0/24
+and 10.26.25.0/24** over the VPN. Either PostgreSQL listens on, or is forwarded from, a free port in that range
+(e.g. **30888**, set `ONPREM_DB_PORT=30888` and `"port": 30888` in the on-prem secret), or IT opens 5432 for
+those CIDRs. Only TCP is needed. Add the three CIDRs to `pg_hba.conf` for the `sl_aws_sync` user.
+
 ## 2. What we need from the MAPI AWS / network team (blocking)
 
 | # | Item | For |
 |---|---|---|
 | A1 | AWS account(s) in il-central-1 + deploy `infra/github-deploy-role.yaml` → role ARN | GitHub Actions deploys without stored keys |
-| A2 | VPC per environment with **≥ 2 private subnets** and a **NAT** route | Lambdas reach Secrets Manager, S3, IMS |
-| A3 | **Route from those subnets to the on-prem PostgreSQL** (Site-to-Site VPN / Direct Connect), firewall TCP 5432 from the subnet CIDRs | Sync |
+| A2 | VPC per environment as in §1b (two private /25 subnets); route table IDs for the S3 endpoint | Lambdas reach Secrets Manager, S3, SNS via endpoints |
+| A3 | **Route from those subnets to the on-prem PostgreSQL** (Site-to-Site VPN / Direct Connect), firewall: TCP to the DB port (30888 or 5432) from 10.26.23–25.0/24 | Sync |
 | A4 | Lambda concurrency quota ≥ 100 per account (≥ 200 if all three envs share one account) | Reserved concurrency |
 | A5 | DNS: `sealevel.mapi.gov.il`, `sealevel-stg.mapi.gov.il` (CNAME → CloudFront) + **ACM certificates in us-east-1** | Custom domains (optional for dev) |
 | A6 | Architect sign-off on the one addition to the diagram: the **admin-only Calibration Lambda** that writes only the calibration tables (Aurora stays a read-only replica of the raw data) | Calibration editor |

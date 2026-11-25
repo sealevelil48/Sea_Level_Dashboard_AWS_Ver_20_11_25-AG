@@ -43,6 +43,16 @@ shift (offset) · interpolate (also re-fills deleted points) · relative to a re
 delete points · restore original · typed values. Drift detection suggests windows.
 See [docs/calibration/EDITOR.md](docs/calibration/EDITOR.md).
 
+## Website reports (admins)
+
+Monthly and yearly files for the MAPI website — generated on a schedule (AWS / Windows Task Scheduler)
+or from the **Reports** tab. See [docs/reports/WEBSITE_REPORTS.md](docs/reports/WEBSITE_REPORTS.md).
+
+## Who sees what
+
+Everyone signs in with Google (Cognito; allowlist in SSM). Only `ADMIN_EMAILS` (benp@mapi.gov.il) sees and
+can use calibration and reports; all other users have a read-only dashboard.
+
 ## Run locally
 
 ```bash
