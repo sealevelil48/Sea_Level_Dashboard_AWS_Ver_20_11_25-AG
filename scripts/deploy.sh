@@ -58,7 +58,7 @@ sam deploy --template-file "$ROOT/infra/template.yaml" --stack-name "$STACK" --r
   --capabilities CAPABILITY_IAM CAPABILITY_AUTO_EXPAND --no-fail-on-empty-changeset --resolve-s3 \
   --parameter-overrides \
     Env="$ENV" ImageUri="$IMAGE" VpcId="$VPC_ID" PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
-    OnPremCidr="$ONPREM_CIDR" OnPremSecretArn="$ONPREM_SECRET_ARN" \
+    OnPremCidr="$ONPREM_CIDR" OnPremDbPort="${ONPREM_DB_PORT:-5432}" OnPremSecretArn="$ONPREM_SECRET_ARN" \
     GoogleClientId="$GOOGLE_CLIENT_ID" GoogleClientSecretName="$GOOGLE_CLIENT_SECRET_NAME" \
     CognitoDomainPrefix="$COGNITO_DOMAIN_PREFIX" AdminEmails="$ADMIN_EMAILS" AllowedUsers="$ALLOWED_USERS" \
     AlarmEmail="$ALARM_EMAIL" OriginVerifyToken="$ORIGIN_TOKEN" CloudFrontWebAclArn="$CF_WAF_ARN" \
@@ -66,7 +66,8 @@ sam deploy --template-file "$ROOT/infra/template.yaml" --stack-name "$STACK" --r
     AuroraMinACU="${AURORA_MIN_ACU:-0.5}" AuroraMaxACU="${AURORA_MAX_ACU:-4}" \
     ExtraCallbackUrls="${EXTRA_CALLBACK_URLS:-http://localhost:30887/auth/callback}" \
     ExtraLogoutUrls="${EXTRA_LOGOUT_URLS:-http://localhost:30887/}" \
-    CustomDomain="${CUSTOM_DOMAIN:-}" AcmCertificateArn="${ACM_CERTIFICATE_ARN:-}"
+    CustomDomain="${CUSTOM_DOMAIN:-}" AcmCertificateArn="${ACM_CERTIFICATE_ARN:-}" \
+    CreateVpcEndpoints="${CREATE_VPC_ENDPOINTS:-false}" PrivateRouteTableIds="${PRIVATE_ROUTE_TABLE_IDS:-}"
 
 out() { aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
           --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text; }

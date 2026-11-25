@@ -18,11 +18,15 @@ Parameters:
     Type: AWS::EC2::VPC::Id
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Private subnets with a NAT route (Lambdas fetch IMS forecasts) and a route to on-prem (sync)
+    Description: The environment's two private /25 subnets (MAPI design) with a route to on-prem (sync); NAT optional with CreateVpcEndpoints=true
   OnPremCidr:
     Type: String
     Description: CIDR of the on-prem PostgreSQL server, reachable over VPN/Direct Connect
     Default: 10.0.0.0/8
+  OnPremDbPort:
+    Type: Number
+    Default: 5432
+    Description: TCP port of the on-prem PostgreSQL as reachable from AWS (the server's firewall opens 30886-30890; put the same port in the on-prem secret)
   OnPremSecretArn:
     Type: String
     Description: Secrets Manager ARN with {host,port,dbname,username,password} for a READ-ONLY on-prem user (create manually)
@@ -80,6 +84,15 @@ Parameters:
     Type: String
     Default: ''
     Description: ACM certificate for CustomDomain — must be in us-east-1 (CloudFront)
+  CreateVpcEndpoints:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'false'
+    Description: "'true' when the private subnets have no NAT / central egress (MAPI design: private /25 subnets only) — adds endpoints for S3, Secrets Manager, SNS and Lambda"
+  PrivateRouteTableIds:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: Route tables of the private subnets (for the S3 gateway endpoint; needed when CreateVpcEndpoints=true)
   SyncSchedule:
     Type: String
     Default: rate(1 minute)
@@ -92,6 +105,7 @@ Parameters:
 Conditions:
   IsProd: !Equals [!Ref Env, prod]
   HasCloudFrontWaf: !Not [!Equals [!Ref CloudFrontWebAclArn, '']]
+  WantVpcEndpoints: !Equals [!Ref CreateVpcEndpoints, 'true']
   HasCustomDomain: !And [!Not [!Equals [!Ref CustomDomain, '']], !Not [!Equals [!Ref AcmCertificateArn, '']]]
 
 Globals:
@@ -119,8 +133,56 @@ Resources:
       GroupDescription: Sea Level Lambdas
       VpcId: !Ref VpcId
       SecurityGroupEgress:
-        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: AWS APIs and IMS }
-        - { IpProtocol: tcp, FromPort: 5432, ToPort: 5432, CidrIp: !Ref OnPremCidr, Description: On-prem PostgreSQL }
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0, Description: AWS APIs (endpoints or egress) }
+        - { IpProtocol: tcp, FromPort: !Ref OnPremDbPort, ToPort: !Ref OnPremDbPort, CidrIp: !Ref OnPremCidr, Description: On-prem PostgreSQL }
+
+  # Endpoints so the Lambdas reach AWS services without internet egress (CreateVpcEndpoints=true)
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: WantVpcEndpoints
+    Properties:
+      GroupDescription: Sea Level VPC interface endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, SourceSecurityGroupId: !Ref LambdaSecurityGroup }
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref PrivateRouteTableIds
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+  SnsEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sns
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
+  LambdaEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: WantVpcEndpoints
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.lambda
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds: !Ref PrivateSubnetIds
+      SecurityGroupIds: [!Ref EndpointSecurityGroup]
 
   AuroraSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -411,12 +473,23 @@ Resources:
           DB_SECRET_ARN: !Ref ReaderSecret
           CALIBRATION_ENABLED: 'false'
           EXPORTS_BUCKET: !Ref ExportsBucket
+          REPORTS_BUCKET: !Ref ReportsBucket
+          REPORTS_JOB_FUNCTION: !Ref ReportsFunction
       Policies:
         - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref ReaderSecret }
         - Statement:
             - Effect: Allow
               Action: [s3:PutObject, s3:GetObject]
               Resource: !Sub ${ExportsBucket.Arn}/exports/*
+            - Effect: Allow          # Reports tab: list + presigned download (admin-only routes)
+              Action: [s3:GetObject]
+              Resource: !Sub ${ReportsBucket.Arn}/reports/*
+            - Effect: Allow
+              Action: [s3:ListBucket]
+              Resource: !GetAtt ReportsBucket.Arn
+            - Effect: Allow          # "Generate" button → reports job (async)
+              Action: [lambda:InvokeFunction]
+              Resource: !GetAtt ReportsFunction.Arn
       Events:
         Proxy:
           Type: Api
@@ -448,6 +521,59 @@ Resources:
             Method: GET
             Auth:
               Authorizer: NONE
+
+  ImsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: IMS sea forecast, alerts and mariners forecast — outside the VPC (internet, no DB), so the private subnets need no NAT
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambda_entry.api_handler] }
+      MemorySize: 1024
+      Timeout: 29
+      ReservedConcurrentExecutions: 5
+      Environment:
+        Variables:
+          CALIBRATION_ENABLED: 'false'
+      Events:
+        SeaForecast:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/sea-forecast, Method: GET }
+        ImsWarnings:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/ims-warnings, Method: GET }
+        MarinersForecast:
+          Type: Api
+          Properties: { RestApiId: !Ref Api, Path: /api/mariners-forecast, Method: GET }
+
+  ReportsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Description: Monthly + yearly website reports → S3 (schedule / admin request), read-only DB user
+      PackageType: Image
+      ImageUri: !Ref ImageUri
+      ImageConfig: { Command: [lambda_entry.reports_handler] }
+      MemorySize: 3008
+      Timeout: 600
+      ReservedConcurrentExecutions: 1
+      VpcConfig: { SecurityGroupIds: [!Ref LambdaSecurityGroup], SubnetIds: !Ref PrivateSubnetIds }
+      Environment:
+        Variables:
+          DB_SECRET_ARN: !Ref ReaderSecret
+          REPORTS_BUCKET: !Ref ReportsBucket
+          REPORTS_TOPIC_ARN: !Ref AlarmTopic
+          MPLCONFIGDIR: /tmp/matplotlib
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy: { SecretArn: !Ref ReaderSecret }
+        - S3CrudPolicy: { BucketName: !Ref ReportsBucket }
+        - SNSPublishMessagePolicy: { TopicName: !GetAtt AlarmTopic.TopicName }
+      Events:
+        Monthly:          # 1st of the month, ~04:15 Israel time → previous month
+          Type: Schedule
+          Properties: { Schedule: 'cron(15 2 1 * ? *)', Input: '{"kind": "monthly"}', Enabled: true }
+        Yearly:           # 2 January → previous year
+          Type: Schedule
+          Properties: { Schedule: 'cron(30 2 2 1 ? *)', Input: '{"kind": "yearly"}', Enabled: true }
 
   DataMathFunction:
     Type: AWS::Serverless::Function
@@ -576,6 +702,17 @@ Resources:
       OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
       LifecycleConfiguration:
         Rules: [{ Id: expire-exports, Status: Enabled, Prefix: exports/, ExpirationInDays: 2 }]
+
+  ReportsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub sealevel-reports-${Env}-${AWS::AccountId}
+      PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true }
+      BucketEncryption: { ServerSideEncryptionConfiguration: [{ ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 } }] }
+      OwnershipControls: { Rules: [{ ObjectOwnership: BucketOwnerEnforced }] }
+      VersioningConfiguration: { Status: Enabled }
 
   FrontendOAC:
     Type: AWS::CloudFront::OriginAccessControl
@@ -767,5 +904,8 @@ Outputs:
     Value: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
   ExportsBucketName:
     Value: !Ref ExportsBucket
+  ReportsBucketName:
+    Description: Monthly/yearly website reports (reports/<kind>/sea_level_<kind>_<period>.zip)
+    Value: !Ref ReportsBucket
   AllowlistParameterName:
     Value: !Ref AllowlistParameter

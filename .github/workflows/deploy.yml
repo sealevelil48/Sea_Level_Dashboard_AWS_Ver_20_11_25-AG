@@ -44,6 +44,7 @@ jobs:
           VPC_ID=${{ vars.VPC_ID }}
           PRIVATE_SUBNET_IDS=${{ vars.PRIVATE_SUBNET_IDS }}
           ONPREM_CIDR=${{ vars.ONPREM_CIDR }}
+          ONPREM_DB_PORT=${{ vars.ONPREM_DB_PORT || '5432' }}
           ONPREM_SECRET_ARN=${{ vars.ONPREM_SECRET_ARN }}
           GOOGLE_CLIENT_ID=${{ vars.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET_NAME=${{ vars.GOOGLE_CLIENT_SECRET_NAME }}
@@ -56,6 +57,8 @@ jobs:
           AURORA_MIN_ACU=${{ vars.AURORA_MIN_ACU || '0.5' }}
           AURORA_MAX_ACU=${{ vars.AURORA_MAX_ACU || '4' }}
           CUSTOM_DOMAIN=${{ vars.CUSTOM_DOMAIN }}
+          CREATE_VPC_ENDPOINTS=${{ vars.CREATE_VPC_ENDPOINTS || 'false' }}
+          PRIVATE_ROUTE_TABLE_IDS=${{ vars.PRIVATE_ROUTE_TABLE_IDS }}
           ACM_CERTIFICATE_ARN=${{ vars.ACM_CERTIFICATE_ARN }}
           PARAMS
       - run: scripts/deploy.sh ${{ inputs.env }} /tmp/params.env
