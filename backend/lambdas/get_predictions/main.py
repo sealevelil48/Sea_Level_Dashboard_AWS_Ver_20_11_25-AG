@@ -3,6 +3,7 @@ import json
 import logging
 import sys
 import os
+import time
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -59,9 +60,41 @@ except ImportError:
     BASELINE_INTEGRATION_AVAILABLE = False
 
 
-# Cache for models (in production, use Redis or similar)
-MODEL_CACHE = {}
+class _TTLCache:
+    """Small bounded TTL cache for forecasts (one per process).
+
+    The previous plain dict grew without limit (one entry per station × steps, steps up to 2000)
+    and used timedelta.seconds, which wraps every 24 h, so day-old forecasts looked fresh again.
+    """
+
+    def __init__(self, ttl_seconds, max_entries):
+        from collections import OrderedDict
+        self.ttl, self.max = ttl_seconds, max_entries
+        self._d = OrderedDict()
+
+    def get(self, key):
+        item = self._d.get(key)
+        if item is None:
+            return None
+        stored, value = item
+        if time.monotonic() - stored > self.ttl:
+            self._d.pop(key, None)
+            return None
+        self._d.move_to_end(key)
+        return value
+
+    def set(self, key, value):
+        self._d[key] = (time.monotonic(), value)
+        self._d.move_to_end(key)
+        while len(self._d) > self.max:
+            self._d.popitem(last=False)
+
+    def clear(self):
+        self._d.clear()
+
+
 CACHE_EXPIRY = 3600  # 1 hour
+MODEL_CACHE = _TTLCache(CACHE_EXPIRY, max_entries=int(os.getenv("PREDICTION_CACHE_ENTRIES", "64")))
 
 
 def get_prediction_data(station: str, days_back: int = 30) -> pd.DataFrame:
@@ -169,11 +202,10 @@ def kalman_predict(station: str, steps: int = 240) -> Optional[List[Dict]]:
         
         # Check cache
         cache_key = f"kalman_{station}_{steps}"
-        if cache_key in MODEL_CACHE:
-            cached_time, cached_result = MODEL_CACHE[cache_key]
-            if (datetime.now() - cached_time).seconds < CACHE_EXPIRY:
-                logger.info(f"Using cached Kalman prediction for {station}")
-                return cached_result
+        cached_result = MODEL_CACHE.get(cache_key)
+        if cached_result is not None:
+            logger.info(f"Using cached Kalman prediction for {station}")
+            return cached_result
         
         # Get historical data (need more for Kalman filter)
         logger.info(f"Fetching historical data for {station}")
@@ -243,7 +275,7 @@ def kalman_predict(station: str, steps: int = 240) -> Optional[List[Dict]]:
         })
         
         # Cache result
-        MODEL_CACHE[cache_key] = (datetime.now(), result)
+        MODEL_CACHE.set(cache_key, result)
         
         logger.info(f"Kalman filter prediction completed for {station}: "
                    f"{len(result)} points with confidence intervals")

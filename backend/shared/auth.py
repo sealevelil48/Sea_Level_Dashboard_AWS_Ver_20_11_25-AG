@@ -101,6 +101,7 @@ def identity_from_event(event: Dict[str, Any]) -> Optional[Identity]:
 # ---------------------------------------------------------------------------
 _JWKS_CACHE: Dict[str, Any] = {"keys": None, "fetched": 0.0}
 _JWKS_TTL = 3600
+_JWKS_MIN_REFETCH = 60
 
 
 def _issuer() -> str:
@@ -132,8 +133,10 @@ def verify_bearer_token(authorization_header: Optional[str]) -> Dict[str, Any]:
     try:
         header = jwt.get_unverified_header(token)
         key = next((k for k in _jwks() if k.get("kid") == header.get("kid")), None)
-        if key is None:
-            _JWKS_CACHE["keys"] = None  # key rotation: refetch once
+        if key is None and time.time() - _JWKS_CACHE["fetched"] > _JWKS_MIN_REFETCH:
+            # Key rotation: refetch, but at most once a minute — otherwise any token with a
+            # made-up kid would make every request call Cognito.
+            _JWKS_CACHE["keys"] = None
             key = next((k for k in _jwks() if k.get("kid") == header.get("kid")), None)
         if key is None:
             raise AuthError("unknown signing key")

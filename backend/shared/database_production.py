@@ -98,7 +98,13 @@ class OptimizedDatabaseManager:
         logger.info("Initializing database engine with connection pooling")
         
         try:
-            self._engine = create_engine(
+            # One connection pool per process: reuse the engine every data handler already uses
+            # (shared.database). A second pool doubled the DB connections of every Lambda container.
+            try:
+                from shared.database import engine as shared_engine
+            except Exception:  # pragma: no cover
+                shared_engine = None
+            self._engine = shared_engine or create_engine(
                 self.DB_URI,
                 poolclass=QueuePool,
                 pool_size=self.POOL_SIZE,
@@ -170,7 +176,11 @@ class OptimizedDatabaseManager:
             return
             
         try:
-            self.metadata.reflect(bind=self._engine, views=True)
+            # Reflect only what is used (reflecting the whole schema slowed every cold start).
+            from sqlalchemy import inspect
+            existing = set(inspect(self._engine).get_table_names()) | set(inspect(self._engine).get_view_names())
+            wanted = [n for n in ('Monitors_effective', 'Monitors_info2', 'Locations', 'SeaTides') if n in existing]
+            self.metadata.reflect(bind=self._engine, views=True, only=wanted)
             
             # Set up table references for legacy code
             # Prefer the corrected view (migration 003); fall back to the raw table.
@@ -190,6 +200,8 @@ class OptimizedDatabaseManager:
     
     def _setup_event_listeners(self):
         """Setup SQLAlchemy event listeners for monitoring"""
+        if self._engine is None:
+            return
         
         @event.listens_for(self._engine, "before_cursor_execute")
         def receive_before_cursor_execute(conn, cursor, statement, params, context, executemany):

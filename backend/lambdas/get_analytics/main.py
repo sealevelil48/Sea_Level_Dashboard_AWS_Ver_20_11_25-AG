@@ -70,8 +70,11 @@ def lambda_handler(event, context):
         # Parse window hours (default: 3, 6, 24)
         window_hours_param = params.get('window_hours', '3,6,24')
         try:
-            window_hours = [int(h.strip()) for h in window_hours_param.split(',')]
-        except:
+            # Bounded: each value becomes a SQL window frame (ROWS n PRECEDING); huge values = DoS
+            window_hours = [int(h.strip()) for h in window_hours_param.split(',')][:5]
+            if not window_hours or any(not 1 <= h <= 720 for h in window_hours):
+                raise ValueError
+        except (TypeError, ValueError):
             window_hours = [3, 6, 24]
 
         # Parse period days
@@ -79,15 +82,17 @@ def lambda_handler(event, context):
         if params.get('period_days'):
             try:
                 period_days = int(params.get('period_days'))
-            except:
+                if not 1 <= period_days <= 3650:
+                    period_days = None
+            except (TypeError, ValueError):
                 period_days = None
 
         # Parse lag hours
         lag_hours = 1
         if params.get('lag_hours'):
             try:
-                lag_hours = int(params.get('lag_hours'))
-            except:
+                lag_hours = max(-720, min(720, int(params.get('lag_hours'))))
+            except (TypeError, ValueError):
                 lag_hours = 1
 
         logger.info(f"[ANALYTICS REQUEST] Type: {analysis_type}, Station: {station}")

@@ -38,11 +38,11 @@ MAX_SPAN = timedelta(days=int(os.getenv("SYNC_MAX_DAYS_PER_RUN", "7")))
 SKIP_COLUMNS = {"Calibration_Offset"}  # legacy in-table corrections never flow from on-prem
 
 
-def _connect(secret_arn, app_name):
+def _connect(secret_arn, app_name, sslmode=None):
     import boto3
     s = json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=secret_arn)["SecretString"])
     return psycopg2.connect(host=s["host"], port=s.get("port", 5432), dbname=s.get("dbname"), user=s["username"],
-                            password=s["password"], connect_timeout=10, sslmode=os.getenv("SYNC_SSLMODE", "prefer"),
+                            password=s["password"], connect_timeout=10, sslmode=sslmode or os.getenv("SYNC_SSLMODE", "prefer"),
                             application_name=app_name, options="-c statement_timeout=240000")
 
 
@@ -123,7 +123,7 @@ def sync_tides(src, dst):
 def handler(event, context):
     started = time.time()
     src = _connect(os.environ["ONPREM_SECRET_ARN"], "sealevel-sync-reader")
-    dst = _connect(os.environ["DB_SECRET_ARN"], "sealevel-sync-writer")
+    dst = _connect(os.environ["DB_SECRET_ARN"], "sealevel-sync-writer", sslmode="require")  # Aurora: always TLS
     try:
         src.set_session(readonly=True)
         result = {}
