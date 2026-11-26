@@ -222,3 +222,6 @@ infra/params.*.env
 !infra/params.example.env
 *.log
 reports_output/
+
+# on-prem DB sync credentials
+scripts/onprem/db_sync/config.ini

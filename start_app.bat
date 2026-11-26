@@ -38,8 +38,9 @@ REM STEP 3: Clean Slate - kill old node and Python processes
 REM ────────────────────────────────────────────────
 echo.
 echo [3/6] Stopping any existing processes...
-taskkill /f /im node.exe 2>nul
-taskkill /f /im python.exe 2>nul
+REM Only the dashboard (ports 30886/30887) is stopped - NOT every python.exe, so the
+REM SSMS->PostgreSQL sync task keeps running.
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 30886,30887 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }"
 timeout /t 2 /nobreak >nul
 echo [OK] Old processes cleared
 
