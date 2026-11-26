@@ -7,7 +7,7 @@ $Starter      = Join-Path $PSScriptRoot 'start_servers_noninteractive.bat'
 $LogDir       = Join-Path $App 'logs'
 $Log          = Join-Path $LogDir 'watchdog.log'
 $Lock         = Join-Path $LogDir 'watchdog.lock'
-$GraceMinutes = 3
+$GraceMinutes = 2
 
 if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out-Null }
 
@@ -31,5 +31,16 @@ if (-not (Test-Path $Starter)) { Write-Log "ERROR: starter not found at $Starter
 
 Set-Content -Path $Lock -Value (Get-Date).ToString('s')
 Write-Log "Down (api=$backendUp, site=$frontendUp) - running $Starter"
-Start-Process -FilePath $Starter -WorkingDirectory $PSScriptRoot -WindowStyle Hidden
+# Launch through WMI, NOT Start-Process: a child of this task would stay inside the task's job, the task would
+# show "Running" for as long as the servers live, and every later run would be skipped ("instance already
+# running", event 322) - so a server that dies (e.g. at boot, before PostgreSQL is up) would never be restarted.
+# The PATH of this task (with the user's Python/Node) is passed on, because WMI processes do not get it.
+$cmdLine = 'cmd.exe /c "set "PATH=' + $env:Path + '" & call "' + $Starter + '""'
+$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmdLine; CurrentDirectory = $PSScriptRoot }
+if ($r.ReturnValue -ne 0) {
+    Write-Log "WMI launch failed (code $($r.ReturnValue)) - starting directly"
+    Start-Process -FilePath $Starter -WorkingDirectory $PSScriptRoot -WindowStyle Hidden
+} else {
+    Write-Log "Starter launched (pid $($r.ProcessId))"
+}
 exit 0
