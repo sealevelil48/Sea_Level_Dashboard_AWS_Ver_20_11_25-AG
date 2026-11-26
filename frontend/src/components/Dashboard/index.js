@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../../config';
 import React, { useState, useEffect, useCallback, useRef, useMemo, Suspense, lazy } from 'react';
 import { Container, Row, Col, Card, Tabs, Tab, Badge, Button, Spinner } from 'react-bootstrap';
 import { Link } from 'react-router-dom';
@@ -14,6 +15,8 @@ import ErrorBoundary from '../ErrorBoundary';
 import DashboardHeader from './DashboardHeader';
 import DashboardFilters from './DashboardFilters';
 import CalibrationActionBar from './CalibrationActionBar';
+import ReportsPanel from './ReportsPanel';
+import { useAuth } from '../../auth/AuthProvider';
 import SeaLevelChart from './SeaLevelChart';
 import DashboardMap from './DashboardMap';
 import WarningsCard from '../WarningsCard';
@@ -28,7 +31,6 @@ import apiService from '../../services/apiService';
 import { calculateDelta } from '../../utils/deltaCalculator';
 import { formatDateTime } from '../../utils/dateUtils';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
 
 /**
  * Safely format a number to fixed decimal places
@@ -46,6 +48,7 @@ const safeToFixed = (value, decimals = 3, fallback = '0.000') => {
 };
 
 function Dashboard() {
+  const { isAdmin } = useAuth();
   // Use extracted hooks
   const { filters, filterValues, updateFilter, updateDateRange, toggleModel } = useFilters();
   const {
@@ -65,6 +68,8 @@ function Dashboard() {
   const [loading, setLoading] = useState(false);
   const [graphData, setGraphData] = useState([]);
   const [tableData, setTableData] = useState([]);
+  const [tideEvents, setTideEvents] = useState(null);   // Tidal Data: high/low tides per station
+  const [tidesNote, setTidesNote] = useState(null);
   const [predictions, setPredictions] = useState({});
   const [forecastData, setForecastData] = useState(null);
   const [stats, setStats] = useState({
@@ -443,7 +448,9 @@ function Dashboard() {
       const params = {
         start_date: filterValues.startDate,
         end_date: filterValues.endDate,
-        data_source: filterValues.dataType,
+        // Tidal Data = the sea-level series plus every high/low tide computed from it (/api/tides).
+        // The old SeaTides table is refreshed rarely on-prem, so recent dates returned 404.
+        data_source: 'default',
         include_outliers: filterValues.showAnomalies ? 'true' : 'false'
       };
 
@@ -479,8 +486,24 @@ function Dashboard() {
 
         setGraphData(allData || []);
 
+        let tideRows = null;
+        if (filterValues.dataType === 'tides') {
+          try {
+            const t = await apiService.getTides(stationsToFetch, filterValues.startDate, filterValues.endDate);
+            tideRows = t?.events || [];
+            setTidesNote(tideRows.length ? null : 'No high/low tides found in this range');
+          } catch (e) {
+            tideRows = [];
+            setTidesNote(e.data?.detail || e.data?.error || 'Tidal analysis is unavailable for this range');
+          }
+        } else {
+          setTidesNote(null);
+        }
+        if (!isMounted.current) return;
+        setTideEvents(tideRows);
+
         // Sort data in ASC order by default (oldest to newest)
-        setTableData([...(allData || [])].sort((a, b) => {
+        setTableData([...(tideRows || allData || [])].sort((a, b) => {
           const dateA = a.Tab_DateTime || a.Date || '';
           const dateB = b.Tab_DateTime || b.Date || '';
           return dateA.localeCompare(dateB);
@@ -502,6 +525,17 @@ function Dashboard() {
       isFetchingRef.current = false;
     }
   }, [stationsFetched, selectedStations, stations, filterValues, calculateStats]);
+
+  // After a calibration commit or undo, reload the corrected series immediately.
+  const lastCalibrationResult = useRef(null);
+  useEffect(() => {
+    const result = calibrationHook.commitResult;
+    if (result && result !== lastCalibrationResult.current && result.success !== false) {
+      lastCalibrationResult.current = result;
+      apiService.clearCache();
+      fetchData();
+    }
+  }, [calibrationHook.commitResult, fetchData]);
 
   // Debounced fetch trigger
   useEffect(() => {
@@ -641,7 +675,21 @@ function Dashboard() {
     isFullscreen: isGraphFullscreen,
     isMobile,
     calibrationPreviewData: filters.calibrationPreviewData,
+    tideEvents: filters.dataType === 'tides' ? tideEvents : null,
+    calibrationEditor: isAdmin && filters.calibrationMode && calibrationHook.samples
+      ? { station: calibrationHook.targetStation, samples: calibrationHook.samples.samples, selection: calibrationHook.selection }
+      : null,
   });
+
+  // Calibration editor: focus the chart on the correction window (± 5 % margin) while editing
+  const editorRange = useMemo(() => {
+    if (!isAdmin || !filters.calibrationMode || !calibrationHook.samples) return null;
+    const a = new Date(filterValues.calibrationStart).getTime();
+    const b = new Date(filterValues.calibrationEnd).getTime();
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
+    const pad = (b - a) * 0.05;
+    return { min: a - pad, max: b + pad };
+  }, [isAdmin, filters.calibrationMode, calibrationHook.samples, filterValues.calibrationStart, filterValues.calibrationEnd]);
 
   // Point selection handlers
   const handlePointSelect = useCallback((pointData) => {
@@ -760,6 +808,24 @@ function Dashboard() {
     });
   }, [activeTab, tableData, predictions, selectedStations, filterValues.endDate]);
 
+  const exportCsv = useCallback(async () => {
+    const station = selectedStations.filter((s) => s !== 'All Stations')[0] || 'All Stations';
+    try {
+      await apiService.exportData({ station, startDate: filterValues.startDate, endDate: filterValues.endDate });
+    } catch (err) {
+      alert('Export failed. Please try again.');
+    }
+  }, [selectedStations, filterValues.startDate, filterValues.endDate]);
+
+  const exportRawCsv = useCallback(async () => {
+    const station = selectedStations.filter((s) => s !== 'All Stations')[0] || 'All Stations';
+    try {
+      await apiService.exportData({ station, startDate: filterValues.startDate, endDate: filterValues.endDate, series: 'raw' });
+    } catch (err) {
+      alert('Export failed. Please try again.');
+    }
+  }, [selectedStations, filterValues.startDate, filterValues.endDate]);
+
   // Sorted table data
   const sortedTableData = useMemo(() => {
     if (!tableData || tableData.length === 0) return [];
@@ -866,10 +932,13 @@ function Dashboard() {
                 onModelChange={toggleModel}
                 onExportGraph={exportGraph}
                 onExportData={exportTable}
+                onExportCsv={exportCsv}
+                onExportRawCsv={isAdmin ? exportRawCsv : undefined}
                 isMobile={isMobile}
                 filtersOpen={filtersOpen}
                 setFiltersOpen={setFiltersOpen}
-                calibrationHook={calibrationHook}
+                calibrationHook={isAdmin ? calibrationHook : null}
+                selectedPoints={selectedPoints}
               />
             </Col>
 
@@ -997,6 +1066,11 @@ function Dashboard() {
                             isMobile={isMobile}
                             isFullscreen={isGraphFullscreen}
                             onPointClick={handlePointSelect}
+                            boxSelect={Boolean(isAdmin && filters.calibrationMode && calibrationHook.selectMode)}
+                            xRange={editorRange}
+                            sunStation={filters.showSunTimes
+                              ? (selectedStations.find((st) => st !== 'All Stations') || 'Haifa') : null}
+                            onBoxSelect={calibrationHook.selectFromChart}
                           />
                           {deltaResult && (
                             <div style={{
@@ -1072,6 +1146,16 @@ function Dashboard() {
                           </Button>
                         </div>
                       )}
+                      {filters.dataType === 'tides' && (
+                        <div className="mt-2 text-center small" role="status">
+                          {tidesNote
+                            ? <span className="text-warning">{tidesNote}</span>
+                            : <span style={{ color: '#8FA3BD' }}>
+                                ▲ high tide · ▼ low tide — {tideEvents?.length ?? 0} tides, computed from the
+                                validated series (see Table View for times)
+                              </span>}
+                        </div>
+                      )}
                       {/* Model Status Indicator */}
                       {filters.predictionModels && filters.predictionModels.length > 0 && (
                         <div className="mt-2 text-center">
@@ -1120,8 +1204,9 @@ function Dashboard() {
                                         {renderSortableHeader('Station', 'Station')}
                                         {filters.dataType === 'tides' ? (
                                           <>
-                                            <th>High Tide (m)</th>
-                                            <th>Low Tide (m)</th>
+                                            <th>Tide</th>
+                                            <th>Level (m)</th>
+                                            <th>Temperature (°C)</th>
                                           </>
                                         ) : (
                                           <>
@@ -1139,12 +1224,13 @@ function Dashboard() {
                                         .slice((currentPage - 1) * itemsPerPage, currentPage * itemsPerPage)
                                         .map((row, idx) => (
                                           <tr key={idx}>
-                                            <td>{filters.dataType === 'tides' ? row.Date : formatDateTime(row.Tab_DateTime)}</td>
+                                            <td>{formatDateTime(row.Tab_DateTime)}</td>
                                             <td>{row.Station}</td>
                                             {filters.dataType === 'tides' ? (
                                               <>
-                                                <td>{safeToFixed(row.HighTide, 3, 'N/A')}</td>
-                                                <td>{safeToFixed(row.LowTide, 3, 'N/A')}</td>
+                                                <td>{row.Type === 'High' ? '▲ High' : '▼ Low'}</td>
+                                                <td>{safeToFixed(row.Tab_Value_mDepthC1, 3, 'N/A')}</td>
+                                                <td>{safeToFixed(row.Tab_Value_monT2m, 1, 'N/A')}</td>
                                               </>
                                             ) : (
                                               <>
@@ -1401,6 +1487,13 @@ function Dashboard() {
                         )}
                       </div>
                     </Tab>
+
+                    {/* Website reports — admin only (the API also refuses everyone else) */}
+                    {isAdmin && (
+                      <Tab eventKey="reports" title="Reports">
+                        {activeTab === 'reports' && <ReportsPanel />}
+                      </Tab>
+                    )}
                   </Tabs>
                 </Card.Body>
               </Card>
@@ -1432,15 +1525,22 @@ function Dashboard() {
       </div>
 
       {/* Calibration action bar — floats at bottom when a preview is loaded */}
-      <CalibrationActionBar
-        isVisible={filters.calibrationMode && !!filters.calibrationPreviewData}
-        offset={filters.calibrationOffset}
-        station={calibrationHook.targetStation || ''}
-        isCommitting={calibrationHook.isCommitting}
-        commitResult={calibrationHook.commitResult}
-        onConfirm={calibrationHook.commitCalibration}
-        onCancel={calibrationHook.cancelCalibration}
-      />
+      {isAdmin && (
+        <CalibrationActionBar
+          preview={filters.calibrationMode ? filters.calibrationPreviewData : null}
+          mode={filters.calibrationCorrectionType || 'offset'}
+          offset={filters.calibrationOffset}
+          station={calibrationHook.targetStation || ''}
+          error={calibrationHook.error}
+          isCommitting={calibrationHook.isCommitting}
+          commitBlocked={calibrationHook.offsetBlocked}
+          isReverting={calibrationHook.isReverting}
+          commitResult={calibrationHook.commitResult}
+          onConfirm={calibrationHook.commitCalibration}
+          onCancel={calibrationHook.dismissResult}
+          onRevert={calibrationHook.revertLastCalibration}
+        />
+      )}
     </ErrorBoundary>
   );
 }

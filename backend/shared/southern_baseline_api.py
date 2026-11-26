@@ -233,7 +233,7 @@ class SouthernBaselineAPI:
                     M."Tab_DateTime",
                     L."Station",
                     M."Tab_Value_mDepthC1"::float AS "SeaLevel"
-                FROM "Monitors_info2" AS M
+                FROM "Monitors_effective" AS M
                 INNER JOIN "Locations" AS L
                     ON L."Tab_TabularTag" = M."Tab_TabularTag"
                 WHERE M."Tab_DateTime" >= :start_date::timestamp
@@ -406,7 +406,7 @@ class SouthernBaselineAPI:
                     M."Tab_DateTime",
                     L."Station",
                     M."Tab_Value_mDepthC1"::float AS "SeaLevel"
-                FROM "Monitors_info2" AS M
+                FROM "Monitors_effective" AS M
                 INNER JOIN "Locations" AS L
                     ON L."Tab_TabularTag" = M."Tab_TabularTag"
                 WHERE M."Tab_DateTime" >= :start_date::timestamp

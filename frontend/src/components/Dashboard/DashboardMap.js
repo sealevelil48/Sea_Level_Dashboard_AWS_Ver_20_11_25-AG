@@ -1,10 +1,10 @@
+import { API_BASE_URL } from '../../config';
 import React, { Suspense, lazy } from 'react';
 import { Card, Tabs, Tab, Button, Spinner } from 'react-bootstrap';
 import GovMapViewer from '../GovMap/GovMapViewer';
 
 const OSMMap = lazy(() => import('../OSMMap'));
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
 
 const DashboardMap = ({
   mapTab,

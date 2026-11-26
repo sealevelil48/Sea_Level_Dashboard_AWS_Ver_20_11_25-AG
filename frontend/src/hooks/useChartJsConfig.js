@@ -144,6 +144,8 @@ export const useChartJsConfig = ({
   isFullscreen, // eslint-disable-line no-unused-vars
   isMobile, // eslint-disable-line no-unused-vars
   calibrationPreviewData, // optional — calibration correction preview overlay
+  calibrationEditor = null, // optional — { station, samples, selection } (admin editor)
+  tideEvents = null,        // optional — Tidal Data: [{Station, Tab_DateTime, Type, Tab_Value_mDepthC1}]
 }) => {
   const chartData = useMemo(() => {
     const datasets = [];
@@ -248,29 +250,45 @@ export const useChartJsConfig = ({
         borderWidth: 2,
         pointRadius: 0, // Hide dots for performance
         pointHoverRadius: 5,
-        tension: 0.4, // Smooth curves (similar to Plotly spline)
+        // Smooth curves for viewing; straight segments while editing (a spline overshoots and
+        // shows levels that were never measured — not acceptable for mm-level QC).
+        tension: filters.calibrationMode ? 0 : 0.4,
         fill: false,
         spanGaps: false, // Show gaps when data is missing
       });
     });
 
+    // Tidal Data: high (▲) and low (▼) tides on each station's line
+    if (Array.isArray(tideEvents) && tideEvents.length > 0) {
+      const byStation = {};
+      tideEvents.forEach((e) => {
+        const key = `${e.Station}|${e.Type}`;
+        (byStation[key] = byStation[key] || []).push({
+          x: new Date(e.Tab_DateTime), y: e.Tab_Value_mDepthC1,
+        });
+      });
+      Object.entries(byStation).forEach(([key, pts]) => {
+        const [st, type] = key.split('|');
+        if (selectedStations.length > 0 && !selectedStations.includes('All Stations')
+            && !selectedStations.includes(st)) return;
+        const high = type === 'High';
+        datasets.push({
+          label: `${st} ${high ? 'high' : 'low'} tides`,
+          data: pts,
+          showLine: false,
+          pointStyle: 'triangle',
+          rotation: high ? 0 : 180,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          borderColor: '#ffffff',
+          borderWidth: 1,
+          backgroundColor: high ? '#22d3ee' : '#f97316',
+        });
+      });
+    }
+
     // Add anomalies if enabled
     if (filters.showAnomalies) {
-      console.log('[useChartJsConfig] Anomaly detection enabled');
-      console.log('[useChartJsConfig] Total data points:', graphData.length);
-
-      // Check what anomaly values exist in the data
-      const anomalyValues = [...new Set(graphData.map(point => point.anomaly))];
-      console.log('[useChartJsConfig] Anomaly values in data:', anomalyValues);
-
-      // Count anomalies by value
-      const anomalyCounts = {};
-      graphData.forEach(point => {
-        const val = point.anomaly ?? 'undefined';
-        anomalyCounts[val] = (anomalyCounts[val] || 0) + 1;
-      });
-      console.log('[useChartJsConfig] Anomaly counts:', anomalyCounts);
-
       const anomalyPoints = graphData
         .filter(point => point.anomaly === -1)
         .map(point => ({
@@ -279,10 +297,7 @@ export const useChartJsConfig = ({
           station: point.Station
         }));
 
-      console.log('[useChartJsConfig] Filtered anomaly points:', anomalyPoints.length);
-
       if (anomalyPoints.length > 0) {
-        console.log('[useChartJsConfig] Adding anomaly dataset to chart');
         datasets.push({
           label: 'Anomalies',
           data: anomalyPoints,
@@ -293,24 +308,12 @@ export const useChartJsConfig = ({
           showLine: false,
           pointHoverRadius: 8,
         });
-      } else {
-        console.log('[useChartJsConfig] No anomaly points found with anomaly === -1');
       }
-    } else {
-      console.log('[useChartJsConfig] Anomaly detection disabled');
     }
 
     // Add prediction models
     // Note: API returns predictions in nested structure: { StationName: { kalman: [...], ensemble: [...], etc } }
     if (predictions && filters.predictionModels && Object.keys(predictions).length > 0) {
-      console.log('[useChartJsConfig] Processing predictions:', {
-        stationKeys: Object.keys(predictions),
-        enabledModels: filters.predictionModels,
-        predictionsStructure: Object.entries(predictions).map(([key, val]) => ({
-          station: key,
-          models: typeof val === 'object' ? Object.keys(val) : 'invalid'
-        }))
-      });
 
       // Prediction colors for different models
       const predictionColors = {
@@ -340,7 +343,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding Kalman Filter for ${stationKey}: ${kalmanData.length} points`);
 
           datasets.push({
             label: `${stationKey} - Kalman Filter`,
@@ -406,7 +408,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding Ensemble for ${stationKey}: ${ensembleData.length} points`);
 
           datasets.push({
             label: `${stationKey} - Ensemble`,
@@ -431,7 +432,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding ARIMA for ${stationKey}: ${arimaData.length} points`);
 
           datasets.push({
             label: `${stationKey} - ARIMA`,
@@ -456,7 +456,6 @@ export const useChartJsConfig = ({
             y: point.yhat
           }));
 
-          console.log(`[useChartJsConfig] Adding Prophet for ${stationKey}: ${prophetData.length} points`);
 
           datasets.push({
             label: `${stationKey} - Prophet`,
@@ -500,27 +499,80 @@ export const useChartJsConfig = ({
         data: previewRows,
         reference_data: refRows,
         station: calStation,
-        offset_applied: calOffset,
       } = calibrationPreviewData;
 
-      // Corrected line — mint green dashed
-      const correctedPoints = previewRows
-        .filter(r => r.corrected_value != null && !isNaN(r.corrected_value))
-        .map(r => ({ x: new Date(r.Tab_DateTime), y: r.corrected_value }));
+      // Corrected line — mint green dashed. Offset mode follows the live input value; other modes
+      // use the backend's values. Deleted samples are gaps (null), so the line never bridges them.
+      const isOffset = filters.calibrationCorrectionType === 'offset';
+      const liveOffset = Number(filters.calibrationOffset || 0);
+      const correctedPoints = previewRows.map(r => {
+        let y;
+        if (isOffset) {
+          const base = r.current_value;
+          y = base == null ? null : base + (r.changed === false ? 0 : liveOffset);
+        } else {
+          y = r.corrected_value;
+        }
+        return { x: new Date(r.Tab_DateTime), y: (y == null || isNaN(y)) ? null : y };
+      });
 
-      if (correctedPoints.length > 0) {
-        const offsetLabel = calOffset >= 0 ? `+${calOffset}` : `${calOffset}`;
+      // Samples this preview would delete
+      const toDelete = previewRows
+        .filter(r => r.will_be_deleted && !r.deleted && r.raw_value != null)
+        .map(r => ({ x: new Date(r.Tab_DateTime), y: r.raw_value }));
+      if (toDelete.length > 0) {
         datasets.push({
-          label: `${calStation} Corrected (${offsetLabel}m)`,
+          label: `Will be deleted (${toDelete.length})`,
+          data: toDelete,
+          showLine: false,
+          borderColor: '#ff5c5c',
+          backgroundColor: '#ff5c5c',
+          pointRadius: 4,
+          pointStyle: 'crossRot',
+        });
+      }
+
+      if (correctedPoints.some(p => p.y != null)) {
+        const MODE_LABELS = {
+          relative: ' (Relative to reference)', interpolate: ' (Interpolated)', delete: ' (Points deleted)',
+          restore: ' (Restored to raw)', manual: ' (Typed values)',
+        };
+        const offsetLabel = isOffset
+          ? ` (${liveOffset >= 0 ? '+' : ''}${liveOffset}m)`
+          : (MODE_LABELS[filters.calibrationCorrectionType] || '');
+        datasets.push({
+          label: `${calStation} Corrected${offsetLabel}`,
           data: correctedPoints,
           borderColor: '#00ff99',
           backgroundColor: '#00ff99',
           borderWidth: 2,
           borderDash: [8, 4],
           pointRadius: 0,
-          tension: 0.4,
+          // Straight segments between samples: a smoothed (Bézier) preview line overshoots and
+          // shows levels that were never measured — not acceptable for mm-level corrections.
+          tension: 0,
           fill: false,
+          spanGaps: false,
         });
+      }
+
+      // Relative mode: samples with no reference within the alignment tolerance get an
+      // interpolated correction — mark them so the operator can see where that happened.
+      if (filters.calibrationCorrectionType === 'relative') {
+        const unmatched = previewRows
+          .filter(r => r.matched === false && r.corrected_value != null && !isNaN(r.corrected_value))
+          .map(r => ({ x: new Date(r.Tab_DateTime), y: r.corrected_value }));
+        if (unmatched.length > 0) {
+          datasets.push({
+            label: `No reference — correction interpolated (${unmatched.length})`,
+            data: unmatched,
+            showLine: false,
+            borderColor: '#ff5c5c',
+            backgroundColor: '#ff5c5c',
+            pointRadius: 2.5,
+            pointStyle: 'crossRot',
+          });
+        }
       }
 
       // Reference station overlay — amber dashed (only when a reference was requested)
@@ -539,10 +591,68 @@ export const useChartJsConfig = ({
             borderWidth: 1.5,
             borderDash: [3, 3],
             pointRadius: 0,
-            tension: 0.4,
+            tension: 0,
             fill: false,
           });
         }
+      }
+    }
+
+    // Calibration editor: full-resolution samples, raw (original) series, deleted and selected points
+    if (filters.calibrationMode && calibrationEditor && Array.isArray(calibrationEditor.samples)
+        && calibrationEditor.samples.length > 0) {
+      const { station: edStation, samples: edSamples, selection: edSelection } = calibrationEditor;
+      const color = getStationColor(edStation);
+      const pts = edSamples.map(r => ({ x: new Date(String(r.Tab_DateTime).replace(' ', 'T')), r }));
+      const hasCorrections = edSamples.some(r => r.deleted || (r.offset && r.offset !== 0));
+      if (hasCorrections) {
+        datasets.push({
+          label: `Editor: ${edStation} raw (original)`,
+          data: pts.map(({ x, r }) => ({ x, y: r.raw_value })),
+          borderColor: 'rgba(148, 163, 184, 0.6)',
+          backgroundColor: 'rgba(148, 163, 184, 0.6)',
+          borderWidth: 1,
+          pointRadius: 0,
+          tension: 0,
+          fill: false,
+        });
+      }
+      datasets.push({
+        label: `Editor: ${edStation} samples`,
+        data: pts.map(({ x, r }) => ({ x, y: r.value })),
+        borderColor: color,
+        backgroundColor: color,
+        borderWidth: 1,
+        pointRadius: edSamples.length <= 3000 ? 1.5 : 0,
+        tension: 0,
+        fill: false,
+        spanGaps: false,
+      });
+      const deleted = pts.filter(({ r }) => r.deleted).map(({ x, r }) => ({ x, y: r.raw_value }));
+      if (deleted.length > 0) {
+        datasets.push({
+          label: `Editor: deleted (${deleted.length})`,
+          data: deleted,
+          showLine: false,
+          borderColor: '#ff5c5c',
+          backgroundColor: '#ff5c5c',
+          pointRadius: 3,
+          pointStyle: 'crossRot',
+        });
+      }
+      if (edSelection && edSelection.size > 0) {
+        const sel = pts.filter(({ r }) => edSelection.has(r.Tab_DateTime))
+          .map(({ x, r }) => ({ x, y: r.value ?? r.raw_value }));
+        datasets.push({
+          label: `Editor: selected (${sel.length})`,
+          data: sel,
+          showLine: false,
+          borderColor: '#ffb454',
+          backgroundColor: 'rgba(255, 180, 84, 0.35)',
+          borderWidth: 1.5,
+          pointRadius: 4,
+          pointStyle: 'circle',
+        });
       }
     }
 
@@ -595,7 +705,8 @@ export const useChartJsConfig = ({
     }
 
     return { datasets };
-  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData]);
+  }, [graphData, predictions, filters, selectedStations, selectedPoints, calibrationPreviewData, calibrationEditor,
+      tideEvents]);
 
   return chartData;
 };

@@ -52,8 +52,8 @@ class OptimizedDatabaseManager:
     
     def __init__(self):
         # Connection Pool Settings
-        self.POOL_SIZE = 20              # Number of persistent connections
-        self.MAX_OVERFLOW = 10           # Additional connections when pool exhausted
+        self.POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '10'))      # Lambda: 1 (one request per container)
+        self.MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', '5'))
         self.POOL_TIMEOUT = 30           # Seconds to wait for available connection
         self.POOL_RECYCLE = 3600         # Recycle connections after 1 hour
         self.POOL_PRE_PING = True        # Test connections before using
@@ -98,7 +98,13 @@ class OptimizedDatabaseManager:
         logger.info("Initializing database engine with connection pooling")
         
         try:
-            self._engine = create_engine(
+            # One connection pool per process: reuse the engine every data handler already uses
+            # (shared.database). A second pool doubled the DB connections of every Lambda container.
+            try:
+                from shared.database import engine as shared_engine
+            except Exception:  # pragma: no cover
+                shared_engine = None
+            self._engine = shared_engine or create_engine(
                 self.DB_URI,
                 poolclass=QueuePool,
                 pool_size=self.POOL_SIZE,
@@ -134,6 +140,8 @@ class OptimizedDatabaseManager:
     
     def _initialize_redis(self):
         """Initialize Redis with LRU eviction policy"""
+        if os.getenv("REDIS_ENABLED", "true").lower() == "false":
+            return  # e.g. on AWS Lambda (ElastiCache not deployed)
         if not REDIS_AVAILABLE:
             return
             
@@ -168,11 +176,18 @@ class OptimizedDatabaseManager:
             return
             
         try:
-            self.metadata.reflect(bind=self._engine)
+            # Reflect only what is used (reflecting the whole schema slowed every cold start).
+            from sqlalchemy import inspect
+            existing = set(inspect(self._engine).get_table_names()) | set(inspect(self._engine).get_view_names())
+            wanted = [n for n in ('Monitors_effective', 'Monitors_info2', 'Locations', 'SeaTides') if n in existing]
+            self.metadata.reflect(bind=self._engine, views=True, only=wanted)
             
             # Set up table references for legacy code
-            if 'Monitors_info2' in self.metadata.tables:
-                self.M = self.metadata.tables['Monitors_info2']
+            # Prefer the corrected view (migration 003); fall back to the raw table.
+            for name in ('Monitors_effective', 'Monitors_info2'):
+                if name in self.metadata.tables:
+                    self.M = self.metadata.tables[name]
+                    break
             if 'Locations' in self.metadata.tables:
                 self.L = self.metadata.tables['Locations']
             if 'SeaTides' in self.metadata.tables:
@@ -185,6 +200,8 @@ class OptimizedDatabaseManager:
     
     def _setup_event_listeners(self):
         """Setup SQLAlchemy event listeners for monitoring"""
+        if self._engine is None:
+            return
         
         @event.listens_for(self._engine, "before_cursor_execute")
         def receive_before_cursor_execute(conn, cursor, statement, params, context, executemany):

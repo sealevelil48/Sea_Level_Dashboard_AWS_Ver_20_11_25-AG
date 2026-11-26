@@ -1693,3 +1693,15 @@ textarea:focus,
     color: blue !important;
   }
 }
+/* Calibration action bar (admin only) */
+.calibration-action-bar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 1040;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 10px 24px calc(10px + env(safe-area-inset-bottom));
+  background: rgba(10, 20, 40, 0.97);
+  border-top: 1px solid #2a3f5f;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
+  color: #c9d6ea;
+}

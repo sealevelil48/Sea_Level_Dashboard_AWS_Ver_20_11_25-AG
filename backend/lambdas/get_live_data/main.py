@@ -47,7 +47,7 @@ def lambda_handler(event, context):
                 # Get latest data for specific station
                 sql_query = '''
                     SELECT l."Station", m."Tab_Value_mDepthC1", m."Tab_DateTime"
-                    FROM "Monitors_info2" m
+                    FROM "Monitors_effective" m
                     JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                     WHERE l."Station" = :station
                     ORDER BY m."Tab_DateTime" DESC
@@ -59,7 +59,7 @@ def lambda_handler(event, context):
                 sql_query = '''
                     SELECT DISTINCT ON (l."Station") 
                            l."Station", m."Tab_Value_mDepthC1", m."Tab_DateTime"
-                    FROM "Monitors_info2" m
+                    FROM "Monitors_effective" m
                     JOIN "Locations" l ON m."Tab_TabularTag" = l."Tab_TabularTag"
                     ORDER BY l."Station", m."Tab_DateTime" DESC
                     LIMIT 10

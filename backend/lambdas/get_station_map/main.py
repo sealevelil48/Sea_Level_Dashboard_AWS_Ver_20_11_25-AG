@@ -46,7 +46,7 @@ def get_latest_station_data(end_date=None):
                 CAST(m."Tab_Value_monT2m" AS FLOAT) as temperature,
                 m."Tab_DateTime" as last_update
             FROM "Locations" l
-            JOIN "Monitors_info2" m ON l."Tab_TabularTag" = m."Tab_TabularTag"
+            JOIN "Monitors_effective" m ON l."Tab_TabularTag" = m."Tab_TabularTag"
             WHERE m."Tab_DateTime" IS NOT NULL
               AND m."Tab_Value_mDepthC1" IS NOT NULL
         '''

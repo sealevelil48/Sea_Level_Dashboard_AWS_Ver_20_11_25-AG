@@ -75,7 +75,7 @@ const GovMapViewer = ({
     queryKey: [QUERY_KEYS.STATIONS, selectedDate],
     queryFn: async () => {
       const response = await fetch(
-        `${apiBaseUrl}/stations/map?end_date=${selectedDate}`
+        `${apiBaseUrl}/api/stations/map?end_date=${selectedDate}`
       );
       if (!response.ok) {
         throw new Error(`Station fetch failed: ${response.status}`);
@@ -102,7 +102,7 @@ const GovMapViewer = ({
   } = useQuery({
     queryKey: [QUERY_KEYS.SEA_FORECAST],
     queryFn: async () => {
-      const response = await fetch(`${apiBaseUrl}/sea-forecast`);
+      const response = await fetch(`${apiBaseUrl}/api/sea-forecast`);
       if (!response.ok) {
         throw new Error(`Forecast fetch failed: ${response.status}`);
       }

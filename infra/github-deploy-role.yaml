@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  One-time, per AWS account (created by the MAPI AWS team): IAM role that GitHub Actions assumes
+  through OIDC to run scripts/deploy.sh. No long-lived AWS keys are stored anywhere.
+  Deploy in il-central-1. If the account already has the GitHub OIDC provider, set CreateOidcProvider=false.
+
+Parameters:
+  GitHubOrg:
+    Type: String
+    Default: sealevelil48
+  GitHubRepo:
+    Type: String
+    Default: Sea_Level_Dashboard_AWS_Ver_20_11_25-AG
+  EnvironmentPattern:
+    Type: String
+    Default: '*'
+    AllowedPattern: '^(\*|dev|stg|prod)$'
+    Description: GitHub environment allowed to assume this role — '*' (one account for dev/stg/prod) or dev / stg / prod (one account per environment)
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+
+Conditions:
+  CreateProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: sealevel-github-deploy
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Only workflow jobs bound to one of the GitHub environments (dev/stg/prod) of this repository
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrg}/${GitHubRepo}:environment:${EnvironmentPattern}'
+      ManagedPolicyArns:
+        # Services the stack creates (Lambda, API Gateway, Cognito, RDS, CloudFront, WAF, S3, ECR, SSM, …).
+        # PowerUserAccess excludes IAM; the inline policy below allows IAM only for this project's roles.
+        - arn:aws:iam::aws:policy/PowerUserAccess
+      Policies:
+        - PolicyName: sealevel-iam-scoped
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ProjectRolesOnly
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:PassRole
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:UpdateAssumeRolePolicy
+                Resource: !Sub arn:aws:iam::${AWS::AccountId}:role/sealevel-*
+              - Sid: ServiceLinkedRoles
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: '*'
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName:
+                      - rds.amazonaws.com
+                      - ops.apigateway.amazonaws.com
+                      - wafv2.amazonaws.com
+
+Outputs:
+  DeployRoleArn:
+    Description: Put this in the GitHub environment variable AWS_DEPLOY_ROLE_ARN
+    Value: !GetAtt DeployRole.Arn

@@ -15,6 +15,75 @@ import {
 import { Line } from 'react-chartjs-2';
 import zoomPlugin from 'chartjs-plugin-zoom';
 import 'chartjs-adapter-date-fns';
+import { sunEvents } from '../../utils/sunTimes';
+
+const SUN_MAX_SPAN_DAYS = 31;   // more than a month of markers is clutter — zoom in to see them
+
+/** Draws a small sun with an up (sunrise) or down (sunset) arrow. */
+function drawSun(ctx, x, y, rising) {
+  ctx.save();
+  ctx.fillStyle = '#FDB813';
+  ctx.strokeStyle = '#FDB813';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.arc(x, y, 4, Math.PI, 0);           // half sun on the horizon
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x - 7, y + 0.5);
+  ctx.lineTo(x + 7, y + 0.5);              // horizon
+  for (const a of [-150, -120, -90, -60, -30]) {   // rays
+    const r = (a * Math.PI) / 180;
+    ctx.moveTo(x + Math.cos(r) * 5.5, y + Math.sin(r) * 5.5);
+    ctx.lineTo(x + Math.cos(r) * 7.5, y + Math.sin(r) * 7.5);
+  }
+  ctx.stroke();
+  ctx.beginPath();                         // arrow
+  const ay = y + 4;
+  if (rising) { ctx.moveTo(x - 3, ay + 3); ctx.lineTo(x, ay); ctx.lineTo(x + 3, ay + 3); }
+  else { ctx.moveTo(x - 3, ay); ctx.lineTo(x, ay + 3); ctx.lineTo(x + 3, ay); }
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Chart.js plugin: sunrise/sunset markers at the top of the plot, faint dotted lines through it. */
+const sunMarkersPlugin = {
+  id: 'sunMarkers',
+  afterDatasetsDraw(chart, _args, opts) {
+    const events = opts?.events;
+    const x = chart.scales?.x;
+    if (!events?.length || !x) return;
+    const span = x.max - x.min;
+    if (!(span > 0) || span > SUN_MAX_SPAN_DAYS * 86400000) return;
+    const { top, bottom, left, right } = chart.chartArea;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.setLineDash([2, 4]);
+    ctx.lineWidth = 1;
+    events.forEach((e) => {
+      const t = e.time.getTime();
+      if (t < x.min || t > x.max) return;
+      const px = x.getPixelForValue(t);
+      if (px < left || px > right) return;
+      ctx.strokeStyle = e.type === 'sunrise' ? 'rgba(253, 184, 19, 0.28)' : 'rgba(255, 140, 60, 0.28)';
+      ctx.beginPath();
+      ctx.moveTo(px, top + 20);
+      ctx.lineTo(px, bottom);
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    events.forEach((e) => {
+      const t = e.time.getTime();
+      if (t < x.min || t > x.max) return;
+      const px = x.getPixelForValue(t);
+      if (px >= left && px <= right) drawSun(ctx, px, top + 10, e.type === 'sunrise');  // in the y-axis headroom (grace) above the data
+    });
+    ctx.fillStyle = 'rgba(253, 184, 19, 0.85)';
+    ctx.font = '10px "Segoe UI", sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(`sunrise ↑ / sunset ↓ · ${opts.station}`, right - 4, bottom - 6);
+    ctx.restore();
+  },
+};
 
 // 1. Register Chart.js components including zoom plugin
 ChartJS.register(
@@ -52,10 +121,61 @@ const SeaLevelChart = React.forwardRef(({
   activeStations = [], // eslint-disable-line no-unused-vars
   isMobile = false,
   isFullscreen = false, // eslint-disable-line no-unused-vars
-  onPointClick = null
+  onPointClick = null,
+  boxSelect = false,       // calibration editor: drag a box / click to select samples
+  onBoxSelect = null,
+  xRange = null,           // { min, max } (ms) — calibration editor focuses on the correction window
+  sunStation = null,       // station whose sunrise/sunset is marked (null = off)
 }, ref) => {
   const chartRef = useRef(null);
   const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const drag = useRef(null);
+  const [dragRect, setDragRect] = useState(null);
+
+  // --- Calibration editor: box / click selection (pointer events → chart units) ---------------
+  const toChart = (clientX, clientY) => {
+    const chart = chartRef.current;
+    if (!chart?.canvas || !chart.scales?.x || !chart.scales?.y) return null;
+    const r = chart.canvas.getBoundingClientRect();
+    const px = clientX - r.left;
+    const py = clientY - r.top;
+    return { px, py, x: chart.scales.x.getValueForPixel(px), y: chart.scales.y.getValueForPixel(py) };
+  };
+
+  const onPointerDown = (e) => {
+    if (!boxSelect || !onBoxSelect || e.button > 0) return;
+    const p = toChart(e.clientX, e.clientY);
+    if (!p) return;
+    drag.current = { start: p, additive: e.shiftKey, toggle: e.ctrlKey || e.metaKey };
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    setDragRect({ left: p.px, top: p.py, width: 0, height: 0 });
+  };
+
+  const onPointerMove = (e) => {
+    if (!drag.current) return;
+    const p = toChart(e.clientX, e.clientY);
+    if (!p) return;
+    const s = drag.current.start;
+    setDragRect({ left: Math.min(s.px, p.px), top: Math.min(s.py, p.py),
+                  width: Math.abs(p.px - s.px), height: Math.abs(p.py - s.py) });
+  };
+
+  const onPointerUp = (e) => {
+    const d = drag.current;
+    drag.current = null;
+    setDragRect(null);
+    if (!d) return;
+    const p = toChart(e.clientX, e.clientY) || d.start;
+    const s = d.start;
+    if (Math.abs(p.px - s.px) < 4 && Math.abs(p.py - s.py) < 4) {
+      // A click: nearest sample within ~8 px in time
+      const chart = chartRef.current;
+      const msPerPx = chart ? Math.abs(chart.scales.x.getValueForPixel(s.px + 1) - chart.scales.x.getValueForPixel(s.px)) : 0;
+      onBoxSelect({ click: true, x: s.x, maxDistanceMs: msPerPx * 8 || Infinity, additive: d.additive, toggle: d.toggle });
+      return;
+    }
+    onBoxSelect({ xMin: s.x, xMax: p.x, yMin: s.y, yMax: p.y, additive: d.additive, toggle: d.toggle });
+  };
 
   // Calculate total data points across all datasets
   const totalDataPoints = React.useMemo(() => {
@@ -100,7 +220,6 @@ const SeaLevelChart = React.forwardRef(({
       config = {
         enabled: false
       };
-      console.log(`[SeaLevelChart] Decimation DISABLED - ${totalDataPoints} points (≤10,000 threshold)`);
     }
     // For medium datasets (10,000 - 50,000 points), use high sample count
     else if (totalDataPoints <= 50000) {
@@ -109,7 +228,6 @@ const SeaLevelChart = React.forwardRef(({
         algorithm: 'lttb',
         samples: 5000
       };
-      console.log(`[SeaLevelChart] Decimation enabled with 5000 samples - ${totalDataPoints} points (10K-50K range)`);
     }
     // For large datasets (>50,000 points), use moderate decimation
     else {
@@ -118,10 +236,22 @@ const SeaLevelChart = React.forwardRef(({
         algorithm: 'lttb',
         samples: 8000
       };
-      console.log(`[SeaLevelChart] Decimation enabled with 8000 samples - ${totalDataPoints} points (>50K)`);
     }
     return config;
   }, [totalDataPoints]);
+
+  // Sunrise/sunset events over the data's time range (drawn only when ≤ 31 days are visible)
+  const sunMarkers = React.useMemo(() => {
+    if (!sunStation || !data?.datasets?.length) return [];
+    let lo = Infinity;
+    let hi = -Infinity;
+    data.datasets.forEach((ds) => (ds.data || []).forEach((p) => {
+      const t = p?.x instanceof Date ? p.x.getTime() : new Date(p?.x).getTime();
+      if (Number.isFinite(t)) { if (t < lo) lo = t; if (t > hi) hi = t; }
+    }));
+    if (!Number.isFinite(lo) || hi - lo > 400 * 86400000) return [];
+    return sunEvents(new Date(lo), new Date(hi), sunStation);
+  }, [data, sunStation]);
 
   // 4. Chart Configuration
   const options = {
@@ -134,6 +264,7 @@ const SeaLevelChart = React.forwardRef(({
       intersect: false,
     },
     onClick: (event, elements, chart) => {
+      if (boxSelect) return; // the editor handles clicks (point selection)
       try {
         // Prevent event propagation and default behavior
         if (event && event.native) {
@@ -246,6 +377,10 @@ const SeaLevelChart = React.forwardRef(({
                              !label.includes('Anomalies') &&
                              !label.includes('Selected Points') &&
                              !label.includes('Connection Line') &&
+                             !label.includes('Editor') &&
+                             !label.includes(' tides') &&
+                             !label.includes('Corrected') &&
+                             !label.includes('Reference') &&
                              !label.includes('CI');
 
         if (isStationData) {
@@ -266,7 +401,7 @@ const SeaLevelChart = React.forwardRef(({
     plugins: {
       zoom: {
         pan: {
-          enabled: true,
+          enabled: !boxSelect, // dragging selects samples in the editor
           mode: 'xy',
           modifierKey: null, // No need to hold a key
         },
@@ -283,6 +418,7 @@ const SeaLevelChart = React.forwardRef(({
         // No limits - allow panning to see predictions in future dates
       },
       decimation: decimationConfig,
+      sunMarkers: { events: sunMarkers, station: sunStation },
       legend: {
         position: isMobileView || isMobile ? 'bottom' : 'top', // UX WIN: Moves legend below chart on mobile
         align: 'start',
@@ -335,8 +471,10 @@ const SeaLevelChart = React.forwardRef(({
     scales: {
       x: {
         type: 'time',
+        ...(xRange ? { min: xRange.min, max: xRange.max } : {}),
         time: {
-          unit: 'day',
+          // Fixed daily ticks for the overview; automatic (hours/minutes) when focused on a window
+          unit: xRange ? undefined : 'day',
           displayFormats: {
             hour: 'HH:mm',
             day: 'MMM dd',
@@ -360,6 +498,7 @@ const SeaLevelChart = React.forwardRef(({
       },
       y: {
         beginAtZero: false, // Sea level can be negative relative to reference
+        grace: sunStation ? '12%' : 0, // headroom for the sunrise/sunset icons
         title: {
           display: !isMobileView,
           text: 'Sea Level (m)',
@@ -393,8 +532,23 @@ const SeaLevelChart = React.forwardRef(({
   }
 
   return (
-    <div className="chart-container" style={{ position: 'relative', height: '100%', width: '100%' }}>
-      <Line ref={chartRef} data={data} options={options} />
+    <div
+      className="chart-container"
+      style={{ position: 'relative', height: '100%', width: '100%',
+               cursor: boxSelect ? 'crosshair' : undefined, touchAction: boxSelect ? 'none' : undefined }}
+      onPointerDown={boxSelect ? onPointerDown : undefined}
+      onPointerMove={boxSelect ? onPointerMove : undefined}
+      onPointerUp={boxSelect ? onPointerUp : undefined}
+      onPointerCancel={boxSelect ? () => { drag.current = null; setDragRect(null); } : undefined}
+      data-testid="sea-level-chart"
+    >
+      <Line ref={chartRef} data={data} options={options} plugins={[sunMarkersPlugin]} />
+      {dragRect && (
+        <div aria-hidden="true" style={{
+          position: 'absolute', left: dragRect.left, top: dragRect.top, width: dragRect.width, height: dragRect.height,
+          border: '1px dashed #ffb454', background: 'rgba(255, 180, 84, 0.12)', pointerEvents: 'none',
+        }} />
+      )}
     </div>
   );
 });

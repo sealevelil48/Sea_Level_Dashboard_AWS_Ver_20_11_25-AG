@@ -34,24 +34,41 @@ if %errorLevel% neq 0 (
 )
 
 REM ────────────────────────────────────────────────
-REM STEP 3: Clean Slate - kill old node processes
+REM STEP 3: Clean Slate - kill old node and Python processes
 REM ────────────────────────────────────────────────
 echo.
-echo [3/6] Stopping any existing node/frontend processes...
-taskkill /f /im node.exe 2>nul
+echo [3/6] Stopping any existing processes...
+REM Only the dashboard (ports 30886/30887) is stopped - NOT every python.exe, so the
+REM SSMS->PostgreSQL sync task keeps running.
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 30886,30887 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }"
 timeout /t 2 /nobreak >nul
-echo [OK] Old node processes cleared
+echo [OK] Old processes cleared
 
 REM ────────────────────────────────────────────────
 REM STEP 4: Build Frontend
 REM ────────────────────────────────────────────────
 echo.
-echo [4/6] Building frontend production bundle (this may take 2-3 minutes)...
+echo [4/6] Building frontend production bundle...
+echo   - Installing dependencies (if needed)
 echo   - Disabling source maps for faster loading
 echo   - Minifying JavaScript and CSS
 echo   - Optimizing assets
 echo.
 cd /d "%~dp0frontend"
+
+REM Install dependencies if node_modules doesn't exist or cross-env is missing
+if not exist "node_modules" (
+    echo Installing npm dependencies...
+    call npm install
+    if %ERRORLEVEL% NEQ 0 (
+        echo.
+        echo ERROR: npm install failed! Check your npm installation and internet connection.
+        echo.
+        pause
+        exit /b 1
+    )
+)
+
 call npm run build-govmap
 
 if %ERRORLEVEL% NEQ 0 (

@@ -208,3 +208,20 @@ credentials
 # ===== Local Secrets Backup =====
 sealevel-secrets-backup/
 secrets-backup/
+
+# Deployment parameters (per environment)
+infra/params.*.env
+!infra/params.example.env
+!.env.example
+!backend/.env.example
+
+# Local tool settings and stray env copies
+.claude/settings.local.json
+**/Env.txt
+infra/params.*.env
+!infra/params.example.env
+*.log
+reports_output/
+
+# on-prem DB sync credentials
+scripts/onprem/db_sync/config.ini

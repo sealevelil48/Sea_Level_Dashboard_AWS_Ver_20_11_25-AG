@@ -1,3 +1,4 @@
+import { API_BASE_URL } from '../config';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, Row, Col, Badge, Spinner, Button } from 'react-bootstrap';
 import { parseWaveHeight, parseWindInfo, getWaveRiskColor, getWindRiskColor } from '../utils/imsCodeTranslations';
@@ -9,7 +10,7 @@ const SeaForecastView = ({ apiBaseUrl }) => {
 
   // ✅ FIX 2.3: Stable API URL to prevent unnecessary re-renders
   const stableApiUrl = useMemo(() => {
-    return apiBaseUrl || process.env.REACT_APP_API_URL || 'http://127.0.0.1:30886';
+    return apiBaseUrl || API_BASE_URL;
   }, [apiBaseUrl]);
 
   const fetchForecastData = useCallback(async () => {
@@ -128,6 +129,13 @@ const SeaForecastView = ({ apiBaseUrl }) => {
                 {forecastData.metadata?.organization} | 
                 Issued: {formatDateTime(forecastData.metadata?.issue_datetime)}
               </small>
+              {forecastData.metadata?.stale && (
+                <div className="mt-1" style={{ color: '#ffc107', fontSize: '0.8rem' }}>
+                  ⚠️ {forecastData.metadata?.source === 'cache'
+                    ? 'IMS is unreachable right now - showing the last forecast received'
+                    : 'IMS has not published a newer forecast yet'}
+                </div>
+              )}
             </Col>
             <Col xs="auto">
               <Button 

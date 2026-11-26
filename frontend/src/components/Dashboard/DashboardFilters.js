@@ -1,7 +1,72 @@
-import React from 'react';
-import { Card, Form, Button, Collapse, Row, Col } from 'react-bootstrap';
+import React, { useState } from 'react';
+import { Card, Form, Button, ButtonGroup, Collapse, Row, Col } from 'react-bootstrap';
 import DateRangePicker from '../DateRangePicker';
+import OffsetInput from './OffsetInput';
+import DriftPanel from './DriftPanel';
 import CustomDropdown from '../CustomDropdown';
+import CalibrationTable from './CalibrationTable';
+
+const tiny = { fontSize: '0.7rem' };
+
+/** Hydras-style point editor: select on the graph or in the table, then delete / interpolate / restore. */
+const PointEditor = ({ cal, onOpenTable }) => {
+  const n = cal.selection.size;
+  const s = cal.samples;
+  return (
+    <div className="mb-2 p-2" style={{ border: '1px solid #2a3f5f', borderRadius: 4 }}>
+      <div className="d-flex justify-content-between align-items-center mb-1">
+        <span className="small" style={{ color: '#00ff99', fontWeight: 600 }}>Point editor</span>
+        <small style={{ ...tiny, color: '#8FA3BD' }} aria-live="polite">
+          {cal.isLoadingSamples ? 'loading samples…'
+            : s ? `${s.count.toLocaleString()} samples · ${s.deleted} deleted · ${s.corrected} corrected` : ''}
+        </small>
+      </div>
+      {cal.samplesNote && <small className="d-block text-warning mb-1" style={tiny}>{cal.samplesNote}</small>}
+      <Button
+        variant={cal.selectMode ? 'warning' : 'outline-warning'}
+        size="sm" className="w-100 mb-1" style={{ fontSize: '0.75rem' }}
+        aria-pressed={cal.selectMode}
+        disabled={!s}
+        onClick={() => cal.setSelectMode(!cal.selectMode)}
+      >
+        {cal.selectMode ? '✏️ Selecting on graph — click to stop' : '✏️ Select points on graph'}
+      </Button>
+      {cal.selectMode && (
+        <small className="d-block mb-1" style={{ ...tiny, color: '#8FA3BD' }}>
+          Drag a box around points · click one point · Shift adds · Ctrl/⌘ toggles. Mouse-wheel still zooms.
+        </small>
+      )}
+      <div className="d-flex align-items-center gap-1 mb-1 flex-wrap">
+        <small style={tiny}><strong>{n.toLocaleString()}</strong> selected</small>
+        <Button variant="link" size="sm" className="p-0 ms-auto" style={tiny} disabled={!n} onClick={cal.clearSelection}>Clear</Button>
+        <Button variant="link" size="sm" className="p-0 ms-2" style={tiny} disabled={!n} onClick={cal.fitWindowToSelection}
+                title="Set the correction window to the first and last selected sample">Fit window</Button>
+      </div>
+      <ButtonGroup size="sm" className="w-100 mb-1" aria-label="Actions on the selected points">
+        <Button variant="outline-danger" style={tiny} disabled={!n || cal.isLoadingPreview}
+                onClick={() => cal.previewAs('delete')} title="Leave the selected samples out of the validated series">
+          🗑 Delete
+        </Button>
+        <Button variant="outline-info" style={tiny} disabled={!n || cal.isLoadingPreview}
+                onClick={() => cal.previewAs('interpolate')} title="Straight line between the nearest good samples">
+          〰 Interpolate
+        </Button>
+        <Button variant="outline-light" style={tiny} disabled={!n || cal.isLoadingPreview}
+                onClick={() => cal.previewAs('restore')} title="Back to the original logger value">
+          ↩ Restore
+        </Button>
+      </ButtonGroup>
+      <small className="d-block mb-1" style={{ ...tiny, color: '#8FA3BD' }}>
+        {n ? 'Offset / relative corrections below also apply to the selection only.'
+          : 'No selection: corrections apply to the whole window.'}
+      </small>
+      <Button variant="outline-secondary" size="sm" className="w-100" style={{ fontSize: '0.75rem' }}
+              disabled={!s} onClick={onOpenTable}>
+        🧾 Table view{cal.editCount ? ` · ${cal.editCount} typed` : ''}
+      </Button>
+    </div>
+  );
+};
 
 const DashboardFilters = ({
   filters,
@@ -17,11 +82,15 @@ const DashboardFilters = ({
   onModelChange,
   onExportGraph,
   onExportData,
+  onExportCsv,
   isMobile,
   filtersOpen,
   setFiltersOpen,
   calibrationHook,
+  selectedPoints,
+  onExportRawCsv,
 }) => {
+  const [showTable, setShowTable] = useState(false);
   return (
     <>
       {isMobile && (
@@ -59,6 +128,7 @@ const DashboardFilters = ({
                   <div key={station} className="d-flex align-items-center">
                     <Form.Check
                       type="checkbox"
+                      id={`station-${station.replace(/\s+/g, '-').toLowerCase()}`}
                       label={station}
                       checked={selectedStations.includes(station)}
                       onChange={() => onStationChange(station)}
@@ -134,7 +204,8 @@ const DashboardFilters = ({
                 />
               </Form.Group>
 
-              {/* ── Calibration Correction ── */}
+              {/* ── Calibration Correction (admins only: calibrationHook is null otherwise) ── */}
+              {calibrationHook && (
               <Form.Group className="mb-2">
                 <Form.Check
                   type="checkbox"
@@ -145,9 +216,10 @@ const DashboardFilters = ({
                   className="small"
                 />
                 <small className="text-muted d-block" style={{ fontSize: '0.7rem' }}>
-                  Non-destructive offset correction
+                  Non-destructive, audited, reversible
                 </small>
               </Form.Group>
+              )}
 
               {filters.calibrationMode && calibrationHook && (
                 <div style={{
@@ -161,11 +233,37 @@ const DashboardFilters = ({
                     Correction Window
                   </Form.Label>
 
+                  <Button
+                    variant="outline-success"
+                    size="sm"
+                    className="w-100 mb-2"
+                    style={{ fontSize: '0.75rem' }}
+                    disabled={!selectedPoints || selectedPoints.length !== 2}
+                    title={!selectedPoints || selectedPoints.length !== 2 ? 'Click two points on the graph first' : undefined}
+                    onClick={() => {
+                      // Sort by time to ensure start < end. Chart times are local wall-clock times:
+                      // format their local parts (toISOString() would shift them to UTC, 2–3 h early).
+                      const sorted = [...selectedPoints].sort((a, b) => new Date(a.x) - new Date(b.x));
+                      const pad = (n) => String(n).padStart(2, '0');
+                      const local = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                      onFilterChange('calibrationStart', local(new Date(sorted[0].x)));
+                      onFilterChange('calibrationEnd', local(new Date(sorted[1].x)));
+                    }}
+                  >
+                    🎯 Use Graph Selection
+                  </Button>
+                  {(!selectedPoints || selectedPoints.length !== 2) && (
+                    <small className="d-block mb-2" style={{ fontSize: '0.65rem', color: '#8FA3BD', marginTop: '-4px' }}>
+                      Click two points on the graph to set the window.
+                    </small>
+                  )}
+
                   <Form.Group className="mb-1">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                    <Form.Label htmlFor="calibration-start" className="small mb-0" style={{ fontSize: '0.7rem' }}>
                       Start (exact time)
                     </Form.Label>
                     <Form.Control
+                      id="calibration-start"
                       type="datetime-local"
                       size="sm"
                       value={filters.calibrationStart || ''}
@@ -175,10 +273,11 @@ const DashboardFilters = ({
                   </Form.Group>
 
                   <Form.Group className="mb-1">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                    <Form.Label htmlFor="calibration-end" className="small mb-0" style={{ fontSize: '0.7rem' }}>
                       End (exact time)
                     </Form.Label>
                     <Form.Control
+                      id="calibration-end"
                       type="datetime-local"
                       size="sm"
                       value={filters.calibrationEnd || ''}
@@ -188,35 +287,147 @@ const DashboardFilters = ({
                   </Form.Group>
 
                   <Form.Group className="mb-2">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
-                      Offset (metres)
+                    <Form.Label htmlFor="calibration-type" className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      Correction Type
                     </Form.Label>
-                    <Form.Control
-                      type="number"
+                    <Form.Select
+                      id="calibration-type"
+                      value={filters.calibrationCorrectionType || 'offset'}
+                      onChange={(e) => onFilterChange('calibrationCorrectionType', e.target.value)}
                       size="sm"
-                      step="0.001"
-                      min="-10"
-                      max="10"
-                      value={filters.calibrationOffset ?? 0}
-                      onChange={(e) => onFilterChange('calibrationOffset', parseFloat(e.target.value) || 0)}
                       style={{ fontSize: '0.75rem' }}
-                    />
+                    >
+                      <option value="offset">Vertical Offset (shift)</option>
+                      <option value="interpolate">Interpolate (bridge / fill deleted)</option>
+                      <option value="relative">Relative Gap Calibration</option>
+                      <option value="delete">Delete points</option>
+                      <option value="restore">Restore original (raw)</option>
+                      <option value="manual">Typed values (table)</option>
+                    </Form.Select>
+                    {filters.calibrationCorrectionType === 'delete' && (
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        Selected samples are left out of the validated series; the raw sample is kept.
+                      </small>
+                    )}
+                    {filters.calibrationCorrectionType === 'manual' && (
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        Type corrected values in the Table view, then Preview.
+                      </small>
+                    )}
+                    {filters.calibrationCorrectionType === 'interpolate' && (
+                      <small className="text-info d-block mt-1" style={{ fontSize: '0.65rem' }}>
+                        ℹ️ Removes spikes by linear interpolation. Offset field disabled.
+                      </small>
+                    )}
                   </Form.Group>
 
-                  <Form.Group className="mb-2">
-                    <Form.Label className="small mb-0" style={{ fontSize: '0.7rem' }}>
-                      Compare with Station
-                    </Form.Label>
-                    <CustomDropdown
-                      value={filters.calibrationReference || 'none'}
-                      onChange={(value) => onFilterChange('calibrationReference', value)}
-                      options={[
-                        { value: 'none',      label: 'None' },
-                        { value: 'Ashdod',    label: 'Ashdod' },
-                        { value: 'Ashkelon',  label: 'Ashkelon' },
-                      ]}
+                  <PointEditor cal={calibrationHook} onOpenTable={() => setShowTable(true)} />
+                  <CalibrationTable
+                    show={showTable}
+                    onHide={() => setShowTable(false)}
+                    station={calibrationHook.targetStation}
+                    samples={calibrationHook.samples?.samples}
+                    selection={calibrationHook.selection}
+                    edits={calibrationHook.edits}
+                    onToggle={calibrationHook.toggleSample}
+                    onSetSelected={calibrationHook.setSelected}
+                    onEdit={calibrationHook.setEdit}
+                    onClearEdits={calibrationHook.clearEdits}
+                    onPreviewEdits={() => { setShowTable(false); calibrationHook.previewAs('manual'); }}
+                  />
+
+                  {filters.calibrationCorrectionType === 'relative' && (
+                    <div className="mb-2">
+                      <OffsetInput
+                        id="calibration-gap"
+                        label="Expected gap: Target − Reference (metres)"
+                        sliderLabel="Expected gap slider"
+                        suggestionLabel="Typical gap"
+                        value={filters.calibrationExpectedGap ?? 0}
+                        onChange={(v) => onFilterChange('calibrationExpectedGap', v)}
+                        onValidity={calibrationHook.setGapValid}
+                        suggestion={calibrationHook.gapSuggestion
+                          ? { value: calibrationHook.gapSuggestion.value,
+                              confidence: `${calibrationHook.gapSuggestion.days} d before, ${calibrationHook.gapSuggestion.confidence}` }
+                          : null}
+                      />
+                      <Button variant="outline-info" size="sm" className="w-100 mb-2" style={{ fontSize: '0.72rem' }}
+                              onClick={() => calibrationHook.fetchGapSuggestion(7)}
+                              disabled={calibrationHook.isLoadingGap || !filters.calibrationReference || filters.calibrationReference === 'none'}>
+                        {calibrationHook.isLoadingGap ? 'Measuring…' : '📏 Measure typical gap (7 days before)'}
+                      </Button>
+                      <fieldset className="mb-1">
+                        <legend className="small mb-1" style={{ fontSize: '0.7rem', float: 'none' }}>Correction strength</legend>
+                        <Form.Check type="radio" id="strength-follow" name="calibration-strength" className="small"
+                                    label="Follow reference (Target = Ref + Gap)"
+                                    checked={(filters.calibrationStrength || 'follow') === 'follow'}
+                                    onChange={() => onFilterChange('calibrationStrength', 'follow')} />
+                        <Form.Check type="radio" id="strength-level" name="calibration-strength" className="small"
+                                    label="Level shift (one constant, keeps own signal)"
+                                    checked={filters.calibrationStrength === 'level'}
+                                    onChange={() => onFilterChange('calibrationStrength', 'level')} />
+                      </fieldset>
+                    </div>
+                  )}
+
+                  {filters.calibrationCorrectionType === 'offset' && (
+                    <OffsetInput
+                      value={filters.calibrationOffset ?? 0}
+                      onChange={(v) => onFilterChange('calibrationOffset', v)}
+                      onValidity={calibrationHook.setOffsetValid}
+                      suggestion={calibrationHook.suggestion}
                     />
+                  )}
+
+                  <Form.Group className="mb-2">
+                    <Form.Label htmlFor="calibration-reference" className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                      {filters.calibrationCorrectionType === 'relative' ? 'Reference station' : 'Compare with station'}
+                      {calibrationHook.isLoadingReferences && <span style={{ color: '#8FA3BD' }}> · checking coverage…</span>}
+                    </Form.Label>
+                    <Form.Select
+                      id="calibration-reference"
+                      size="sm"
+                      value={filters.calibrationReference || 'none'}
+                      onChange={(e) => onFilterChange('calibrationReference', e.target.value)}
+                      style={{ fontSize: '0.75rem' }}
+                    >
+                      <option value="none">None</option>
+                      {(calibrationHook.references
+                        ? calibrationHook.references.map((r) => ({
+                            value: r.station,
+                            label: r.coverage > 0 ? `${r.station} · ${Math.round(r.coverage * 100)}%` : `${r.station} · no data in window`,
+                            disabled: r.coverage === 0,
+                          }))
+                        : (stations || [])
+                            .filter((st) => st !== calibrationHook.targetStation && st !== 'All Stations')
+                            .map((st) => ({ value: st, label: st, disabled: false }))
+                      ).map((o) => (
+                        <option key={o.value} value={o.value} disabled={o.disabled}>{o.label}</option>
+                      ))}
+                    </Form.Select>
+                    {calibrationHook.references && (
+                      <small className="d-block mt-1" style={{ fontSize: '0.62rem', color: '#8FA3BD' }}>
+                        % = share of the window with a reference sample within ±2 min
+                      </small>
+                    )}
                   </Form.Group>
+
+                  {filters.calibrationCorrectionType === 'relative' && (
+                    <Form.Group className="mb-2">
+                      <Form.Label htmlFor="drift-threshold" className="small mb-0" style={{ fontSize: '0.7rem' }}>
+                        Drift threshold (metres)
+                      </Form.Label>
+                      <Form.Select id="drift-threshold" size="sm" style={{ fontSize: '0.75rem' }}
+                                   value={String(filters.calibrationDriftThreshold ?? 0.05)}
+                                   onChange={(e) => onFilterChange('calibrationDriftThreshold', Number(e.target.value))}>
+                        <option value="0.02">0.02 m (sensitive)</option>
+                        <option value="0.03">0.03 m</option>
+                        <option value="0.05">0.05 m (standard)</option>
+                        <option value="0.1">0.10 m</option>
+                        <option value="0.2">0.20 m (coarse)</option>
+                      </Form.Select>
+                    </Form.Group>
+                  )}
 
                   <Button
                     variant="outline-info"
@@ -226,7 +437,9 @@ const DashboardFilters = ({
                     onClick={calibrationHook.fetchSuggest}
                     disabled={calibrationHook.isLoadingSuggest}
                   >
-                    {calibrationHook.isLoadingSuggest ? 'Detecting…' : '⚡ Auto-Suggest Offset'}
+                    {calibrationHook.isLoadingSuggest
+                      ? 'Detecting…'
+                      : filters.calibrationCorrectionType === 'relative' ? '🔎 Detect Drift (snap window)' : '⚡ Auto-Suggest Offset'}
                   </Button>
 
                   <Button
@@ -235,16 +448,23 @@ const DashboardFilters = ({
                     className="w-100"
                     style={{ fontSize: '0.75rem' }}
                     onClick={calibrationHook.fetchPreview}
-                    disabled={calibrationHook.isLoadingPreview}
+                    disabled={calibrationHook.isLoadingPreview || calibrationHook.offsetBlocked}
                   >
                     {calibrationHook.isLoadingPreview ? 'Loading…' : '👁 Preview Correction'}
                   </Button>
 
                   {calibrationHook.error && (
-                    <small className="text-danger d-block mt-1" style={{ fontSize: '0.7rem' }}>
+                    <small role="alert" className="text-danger d-block mt-1" style={{ fontSize: '0.7rem' }}>
                       {calibrationHook.error}
                     </small>
                   )}
+
+                  {/* Stays visible after "Correct this" switches to offset mode */}
+                  <DriftPanel
+                    drift={calibrationHook.drift}
+                    threshold={filters.calibrationDriftThreshold ?? 0.05}
+                    onApplyEpisode={calibrationHook.applyEpisode}
+                  />
                 </div>
               )}
 
@@ -260,6 +480,17 @@ const DashboardFilters = ({
                 <small className="text-muted d-block" style={{ fontSize: '0.7rem' }}>
                   Uses Israeli sea level monitoring rules
                 </small>
+              </Form.Group>
+
+              <Form.Group className="mb-2">
+                <Form.Check
+                  type="checkbox"
+                  id="sun-times-check"
+                  label="Show sunrise / sunset"
+                  checked={filters.showSunTimes !== false}
+                  onChange={(e) => onFilterChange('showSunTimes', e.target.checked)}
+                  className="small"
+                />
               </Form.Group>
 
               {/* Prediction Models */}
@@ -345,10 +576,30 @@ const DashboardFilters = ({
                     onClick={onExportData}
                     style={{ fontSize: '0.75rem' }}
                   >
-                    Export Data
+                    Export Excel
                   </Button>
                 </Col>
               </Row>
+              {onExportCsv && (
+                <Row className="mt-1">
+                  <Col>
+                    <Button variant="outline-secondary" size="sm" className="w-100 py-1"
+                            onClick={onExportCsv} style={{ fontSize: '0.75rem' }}
+                            title="Full-resolution CSV generated on the server (validated values)">
+                      Download CSV
+                    </Button>
+                  </Col>
+                  {onExportRawCsv && calibrationHook && (
+                    <Col>
+                      <Button variant="outline-secondary" size="sm" className="w-100 py-1"
+                              onClick={onExportRawCsv} style={{ fontSize: '0.75rem' }}
+                              title="Original logger values with each sample's offset and deleted flag (admins)">
+                        Raw CSV
+                      </Button>
+                    </Col>
+                  )}
+                </Row>
+              )}
             </Card.Body>
           </Card>
         </div>

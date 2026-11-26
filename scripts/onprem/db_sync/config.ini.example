@@ -1,0 +1,26 @@
+; Copy to config.ini next to the script. Never commit config.ini.
+; NOTE: no quotes around values - configparser keeps quotes as part of the text.
+; Use a dedicated PostgreSQL login for the sync (not the "postgres" superuser), e.g.:
+;   CREATE ROLE sealevel_sync LOGIN PASSWORD '...';
+;   GRANT CONNECT ON DATABASE <db> TO sealevel_sync;
+;   GRANT USAGE ON SCHEMA public TO sealevel_sync;
+;   GRANT SELECT, INSERT ON "Monitors_info2", "Monitors_info2_rejected" TO sealevel_sync;
+;   (The unique index and NOT NULL rules already exist on your server, so no owner rights are needed any more.)
+
+[postgresql]
+dbname = 
+user = 
+password = 
+host = localhost
+port = 5432
+
+[sqlserver]
+host = 
+dbname = 
+user = 
+password = 
+schema = 
+table = 
+; Optional: force a specific ODBC driver. Leave empty to auto-detect.
+; python -c "import pyodbc; print(pyodbc.drivers())"
+driver = 

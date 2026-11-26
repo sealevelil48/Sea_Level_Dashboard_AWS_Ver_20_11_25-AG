@@ -1,6 +1,25 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <script>
+      // Auth: this page runs in a same-origin iframe; borrow the dashboard's ID token for /api calls.
+      (function () {
+        var nativeFetch = window.fetch.bind(window);
+        window.fetch = function (input, init) {
+          init = init || {};
+          var url = typeof input === 'string' ? input : (input && input.url) || '';
+          var token = null;
+          try { token = window.parent && window.parent.__seaLevelGetIdToken && window.parent.__seaLevelGetIdToken(); } catch (e) {}
+          if (token && (url.indexOf(window.location.origin + '/api/') === 0 || url.indexOf('/api/') === 0)) {
+            var headers = new Headers(init.headers || {});
+            headers.set('Authorization', 'Bearer ' + token);
+            init = Object.assign({}, init, { headers: headers });
+          }
+          return nativeFetch(input, init);
+        };
+      })();
+    </script>
+
     <title>GOVMAP - Sea Level Stations</title>
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -532,7 +551,7 @@
                 
                 const fetchAndDisplayStations = (endDate) => {
                     const apiUrl = window.location.protocol + '//' + window.location.host;
-                    fetch(`${apiUrl}/stations/map?end_date=${endDate}`)
+                    fetch(`${apiUrl}/api/stations/map?end_date=${endDate}`)
                         .then(response => response.json())
                         .then(data => {
                             if (!Array.isArray(data) || data.length === 0) {
@@ -547,7 +566,7 @@
                 
                 const fetchWaveForecast = () => {
                     const apiUrl = window.location.protocol + '//' + window.location.host;
-                    fetch(`${apiUrl}/sea-forecast`)
+                    fetch(`${apiUrl}/api/sea-forecast`)
                         .then(response => response.json())
                         .then(data => {
                             if (data && data.locations) {

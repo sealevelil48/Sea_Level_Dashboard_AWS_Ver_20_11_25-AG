@@ -7,15 +7,20 @@ const defaultFilters = {
   trendline: 'none',
   analysisType: 'none',
   showAnomalies: false,
+  showSunTimes: true,                  // sunrise/sunset markers on the main graph
   predictionModels: [],
   forecastHours: 72,
   // Calibration correction state
-  calibrationMode: false,          // toggle — panel visible and active
-  calibrationStart: null,          // string | null — full ISO-8601 datetime, e.g. "2026-10-08T15:13"
-  calibrationEnd: null,            // string | null
-  calibrationOffset: 0.0,          // metres, float
-  calibrationReference: 'none',   // 'none' | 'Ashdod' | 'Ashkelon'
-  calibrationPreviewData: null,   // API response or null
+  calibrationMode: false,              // toggle — panel visible and active
+  calibrationStart: null,              // string | null — full ISO-8601 datetime, e.g. "2026-10-08T15:13"
+  calibrationEnd: null,                // string | null
+  calibrationOffset: 0.0,              // metres, float
+  calibrationReference: 'none',        // 'none' | 'Ashdod' | 'Ashkelon'
+  calibrationCorrectionType: 'offset', // 'offset' | 'interpolate' | 'relative' | 'delete' | 'restore' | 'manual'
+  calibrationExpectedGap: null,        // metres, float | null — only used in relative mode
+  calibrationStrength: 'follow',       // relative mode: 'follow' (Target = Ref + Gap) | 'level' (one constant shift)
+  calibrationDriftThreshold: 0.05,     // metres — drift detection threshold
+  calibrationPreviewData: null,        // API response or null
 };
 
 export const useFilters = () => {
@@ -42,10 +47,15 @@ export const useFilters = () => {
       predictionModels: filters.predictionModels,
       forecastHours: filters.forecastHours,
       // Calibration — full ISO timestamps for sub-minute precision in SQL
+      calibrationMode: Boolean(filters.calibrationMode),
       calibrationStart: filters.calibrationStart || `${startDateStr}T00:00`,
       calibrationEnd: filters.calibrationEnd || `${endDateStr}T23:59`,
       calibrationOffset: filters.calibrationOffset,
       calibrationReference: filters.calibrationReference,
+      calibrationCorrectionType: filters.calibrationCorrectionType,
+      calibrationExpectedGap: filters.calibrationExpectedGap ?? 0.0,
+      calibrationStrength: filters.calibrationStrength || 'follow',
+      calibrationDriftThreshold: filters.calibrationDriftThreshold ?? 0.05,
     };
   }, [filters]);
 

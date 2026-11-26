@@ -1,267 +1,89 @@
-# Sea Level Dashboard
+# Sea Level Dashboard — Israel Mapping Center (MAPI)
 
-[![CI](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version/actions/workflows/ci.yml/badge.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version)
+Monitoring, quality control and analysis of sea level at six Israeli coastal stations
+(Acre, Haifa, Yafo, Ashdod, Ashkelon, Eilat): live and historical data, IMS forecasts and alerts,
+Kalman/ARIMA predictions, Southern Baseline anomaly rules, and an audited calibration editor.
 
-A comprehensive real-time sea level monitoring and prediction system for Israeli coastal stations, featuring advanced anomaly detection using Southern Baseline Rules, predictive analytics with multiple ML models, and interactive visualizations.
+| | |
+|---|---|
+| Frontend | React 18 (CRA), Chart.js, Leaflet / GovMap — `frontend/` |
+| API | FastAPI, one app for AWS Lambda and on-prem — `backend/app.py` |
+| Database | PostgreSQL (`Monitors_info2`, `Locations`, `SeaTides`) + calibration layer — `backend/migrations/` |
+| AWS | SAM template per the architecture of 12.08.2025 — `infra/`, `scripts/deploy.sh` |
+| Auth | Google sign-in through Amazon Cognito; calibration for admins only |
 
-## 🎯 Overview
+## Repository layout
 
-The Sea Level Monitoring System provides real-time monitoring and analysis of sea level data from multiple stations across Israel's coastline. Built with modern web technologies, it offers interactive visualizations, wave forecasting, and comprehensive data analysis capabilities.
+```
+backend/
+  app.py                    API routes (auth, data, export, calibration)
+  lambda_entry.py           AWS Lambda entry points (Mangum)
+  local_server_optimized.py on-prem launcher (uvicorn, serves frontend/build)
+  lambdas/                  handlers: data, live, predictions, analytics, IMS, calibration, sync, migrate, Cognito
+  shared/                   database, auth, calibration math, Kalman filter, Southern Baseline rules, exports
+  migrations/               SQL migrations (calibration layer, least-privilege roles, indexes)
+  tests/                    pytest against a real PostgreSQL
+frontend/src/
+  components/Dashboard/     dashboard, chart, filters, calibration editor (graph + table)
+  hooks/                    useCalibration, useChartJsConfig, useFilters, …
+  auth/                     Cognito PKCE sign-in
+infra/                      template.yaml (main stack), cloudfront-waf.yaml (us-east-1), params.example.env
+scripts/deploy.sh           one-command deploy: dev | stg | prod
+docs/                       AWS architecture + deployment plan, calibration editor, reviews, guides
+```
 
-### Key Stations Monitored
-- **Haifa** - Northern Israel's main port
-- **Acre** - Historic coastal city  
-- **Ashdod** - Central Mediterranean port
-- **Ashkelon** - Southern coastal city
-- **Yafo (Jaffa)** - Tel Aviv metropolitan area
-- **Eilat** - Red Sea monitoring station
+## Calibration editor (admins)
 
-## ✨ Features
+Raw logger data in `Monitors_info2` is never modified. Corrections live in `Calibration_Offsets`
+(offset + deleted flag per sample) and every reader uses the `Monitors_effective` view — the
+**validated series**. Every commit is audited (who, when, what) and can be undone.
 
-### 📊 Data Visualization
-- **Interactive Charts** - Real-time sea level and temperature graphs
-- **Geographic Mapping** - Station locations with live status indicators (OpenStreetMap & GovMap)
-- **Data Tables** - Sortable, filterable tabular data views
-- **Wave Forecasting** - IMS weather forecast integration
+Operations, on the whole window or on points selected on the graph / in the table:
+shift (offset) · interpolate (also re-fills deleted points) · relative to a reference station ·
+delete points · restore original · typed values. Drift detection suggests windows.
+See [docs/calibration/EDITOR.md](docs/calibration/EDITOR.md).
 
-### 🔮 Predictive Analytics
-- **ARIMA Forecasting** - Short-term sea level predictions
-- **Statistical Analysis** - Trend analysis and pattern recognition
-- **Confidence Intervals** - Prediction uncertainty visualization
+## Website reports (admins)
 
-### 🔄 Real-time Monitoring
-- **Live Data Streams** - Regular data updates
-- **System Health** - Station status and connectivity monitoring
-- **Performance Metrics** - API response times and data quality
+Monthly and yearly files for the MAPI website — generated on a schedule (AWS / Windows Task Scheduler)
+or from the **Reports** tab. See [docs/reports/WEBSITE_REPORTS.md](docs/reports/WEBSITE_REPORTS.md).
 
-## 🏗️ Architecture
+## Who sees what
 
-### Technology Stack
+Everyone signs in with Google (Cognito; allowlist in SSM). Only `ADMIN_EMAILS` (benp@mapi.gov.il) sees and
+can use calibration and reports; all other users have a read-only dashboard.
 
-**Frontend:**
-- React 18 - Modern component-based UI
-- Bootstrap 5 - Responsive CSS framework
-- Plotly.js - Interactive data visualization
-- React-Leaflet - Interactive maps
-- Axios - HTTP client
+## Run locally
 
-**Backend:**
-- FastAPI - High-performance Python web framework
-- SQLAlchemy - Database ORM
-- PostgreSQL - Primary data storage
-- Redis - Caching (optional)
-- Pandas - Data processing
-
-## 🚀 Quick Start
-
-### Prerequisites
-- Python 3.8+ and pip
-- Node.js 16+ and npm
-- PostgreSQL 12+
-- Git
-
-### Installation
-
-1. **Clone the repository**
 ```bash
-git clone https://github.com/sealevelil48/Sea_Level_Dashboard_Server_Version.git
-cd Sea_Level_Dashboard_Server_Version
+# backend (Python 3.12)
+cd backend && python -m venv venv && . venv/bin/activate
+pip install -r requirements-lambda.txt uvicorn
+cp .env.example .env            # DB_URI=…, AUTH_MODE=disabled for local development
+python local_server_optimized.py         # http://localhost:30886
+
+# frontend
+cd frontend && npm ci && npm start      # http://localhost:30887 (AUTH_MODE=disabled)
 ```
 
-2. **Backend Setup**
+On Windows, the on-prem server is started with `start_app.bat` (as Administrator).
+
+## Tests
+
 ```bash
-cd backend
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your database credentials
-python local_server.py
+cd backend  && TEST_DB_URI=postgresql+psycopg2://user:pass@localhost:5432/sealevel_test pytest -q
+cd frontend && CI=true npx react-scripts test --watchAll=false
 ```
 
-3. **Frontend Setup**
+CI (`.github/workflows/ci.yml`) runs both, a production build, `cfn-lint` and the Lambda image build.
+
+## Deploy to AWS
+
+See [docs/aws/DEPLOYMENT_PLAN.md](docs/aws/DEPLOYMENT_PLAN.md) (dev → stg → prod) and the runbook
+[docs/aws/DEPLOYMENT.md](docs/aws/DEPLOYMENT.md). Short version:
+
 ```bash
-cd frontend
-npm install
-npm start
+scripts/deploy.sh dev infra/params.dev.env
 ```
 
-4. **Access the Application**
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:30886
-- API Documentation: http://localhost:30886/docs
-
-## 💻 Usage
-
-### Basic Operations
-
-1. **Viewing Real-time Data**
-   - Navigate to the main dashboard
-   - Select station from dropdown or view "All Stations"
-   - Data updates automatically
-
-2. **Historical Analysis**
-   - Use date range picker to select time period
-   - Choose from preset ranges (24h, 7d, 30d)
-   - View trends in interactive graphs
-
-3. **Wave Forecasting**
-   - Navigate to "Waves Forecast" tab
-   - View IMS weather forecasts for coastal regions
-   - See combined data in map markers
-
-4. **Map Views**
-   - Switch between OpenStreetMap and GovMap
-   - Click markers for detailed station information
-   - View forecast data overlays
-
-## 🔌 API Documentation
-
-### Core Endpoints
-
-- `GET /stations` - Get all monitoring stations
-- `GET /data` - Get time series data with filters
-- `GET /live` - Get latest readings
-- `GET /sea-forecast` - Get IMS wave forecast data
-- `GET /health` - System health check
-
-### Example Usage
-```bash
-# Get stations
-curl http://localhost:30886/api/stations
-
-# Get data for specific station
-curl "http://localhost:30886/api/data?station=Haifa&start_date=2024-01-01&end_date=2024-01-31"
-
-# Get wave forecast
-curl http://localhost:30886/api/sea-forecast
-```
-
-## 🛠️ Development
-
-### Project Structure
-```
-Sea_Level_Dashboard_Server_Version/
-├── README.md
-├── requirements.txt
-├── .gitignore
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   ├── services/
-│   │   └── utils/
-│   ├── public/
-│   └── package.json
-├── backend/
-│   ├── lambdas/
-│   ├── shared/
-│   ├── tests/
-│   └── requirements.txt
-└── deployment/
-```
-
-### Running Tests
-```bash
-# Backend tests
-cd backend
-python -m pytest tests/
-
-# Frontend tests
-cd frontend
-npm test
-```
-
-### Code Style
-- Python: Follow PEP 8, use type hints
-- JavaScript: Use ESLint, prefer functional components
-- Commit messages: Use conventional commits format
-
-## 🚀 Deployment
-
-### Docker Deployment (Recommended)
-```bash
-# Build and start services
-docker-compose up -d
-
-# Check status
-docker-compose ps
-```
-
-### Manual Deployment
-```bash
-# Backend
-cd backend
-gunicorn -w 4 -k uvicorn.workers.UvicornWorker local_server:app
-
-# Frontend
-cd frontend
-npm run build
-# Serve build/ directory with nginx
-```
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch: `git checkout -b feature/amazing-feature`
-3. Make changes and add tests
-4. Commit changes: `git commit -m 'feat: add amazing feature'`
-5. Push to branch: `git push origin feature/amazing-feature`
-6. Open Pull Request
-
-## CI/CD
-
-This file describes the CI workflow added to the repository.
-
-- Workflow: `.github/workflows/ci.yml` — runs on `push` and `pull_request` for `main`.
-- Matrix: Python 3.10 and 3.11.
-- Steps: checkout, setup python, install `requirements.txt` (root and `backend/requirements.txt` if present), run `pytest -q`.
-
-### Quick notes
-
-- If you want the workflow to run only on certain paths, edit the `on:` section.
-- If tests require additional services (Postgres, Redis), add `services:` or use `docker-compose` in the workflow.
-
-### How to run locally
-
-1. Create a virtualenv: `python -m venv .venv`
-2. Activate: `.\.venv\Scripts\Activate.ps1` (PowerShell)
-3. Install deps: `pip install -r requirements.txt` and `pip install -r backend/requirements.txt`
-4. Run tests: `pytest -q`
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**Database Connection Error**
-```bash
-# Check PostgreSQL status
-sudo systemctl status postgresql
-# Test connection
-psql -h localhost -U username -d database_name
-```
-
-**Frontend Not Loading**
-```bash
-# Clear cache and reinstall
-rm -rf node_modules package-lock.json
-npm install
-```
-
-**API CORS Errors**
-- Verify API URL in frontend .env
-- Check CORS settings in backend configuration
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- Israeli Meteorological Service - Weather forecast data
-- OpenStreetMap - Map tiles and geographic data
-- Survey of Israel - Geographic and mapping services
-- All contributors who have helped improve this project
-
----
-
-For more detailed information, check the API documentation at `/docs` when running the backend server.
+or GitHub → Actions → **Deploy** → choose `dev`, `stg` or `prod`.

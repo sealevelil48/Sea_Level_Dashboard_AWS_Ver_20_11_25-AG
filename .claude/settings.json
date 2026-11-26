@@ -1,9 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git commit -m 'feat: add non-destructive calibration correction feature \\(backend endpoints, SQL migration, frontend UI and chart overlay\\) *)",
-      "Bash(git commit -m 'security: harden calibration endpoints \\(auth, input validation, allowlists\\) *)",
-      "Bash(del /f \"start_production.bat\" \"start_backend.bat\" \"start_dashboard.bat\" \"start_for_clients.bat\" \"setup_govmap_domain.bat\" \"restart_backend.bat\")"
+      "PowerShell(Get-NetTCPConnection -LocalPort 30886 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }; Write-Host \"Port 30886 freed\")",
+      "Bash(git commit -m 'fix: add Python process cleanup to start_app.bat to free port 30886 *)",
+      "Bash(git commit -m 'fix: clear Redis cache on calibration commit and add column detection logging *)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(git commit -m 'fix: use effective values for interpolation to respect existing offsets *)"
     ]
   }
 }
