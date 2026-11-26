@@ -12,6 +12,9 @@ REM A log over 20 MB is renamed to *.old when its server is (re)started
 powershell -NoProfile -Command "foreach ($n in 'backend','frontend','starter') { $f='%LOGDIR%\'+$n+'.log'; if ((Test-Path $f) -and (Get-Item $f).Length -gt 20MB) { Move-Item $f ($f+'.old') -Force -ErrorAction SilentlyContinue } }"
 
 REM Python: the backend venv if it exists, otherwise python on PATH
+REM Log files are UTF-8 (otherwise log lines with symbols fail on the Windows code page)
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 set "PY=python"
 if exist "%APP%\backend\venv\Scripts\python.exe" set "PY=%APP%\backend\venv\Scripts\python.exe"
 
